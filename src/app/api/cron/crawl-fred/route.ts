@@ -36,12 +36,29 @@ export async function GET(request: Request) {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   // 3. Danh sách các chỉ báo Hằng Số Vĩ Mô (Constants) cần crawl
-  const indicatorsToFetch = ['T10Y2Y', 'SAHMREALTIME', 'M2SL'];
+  const SERIES_CONFIG: Record<string, { units: string }> = {
+    "M2SL":        { units: "pc1" },
+    "WALCL":       { units: "lin" },
+    "WTREGEN":     { units: "lin" },
+    "RRPONTSYD":   { units: "lin" },
+    "T10Y2Y":      { units: "lin" },
+    "SAHMREALTIME":{ units: "lin" },
+    "BAMLH0A0HYM2":{ units: "lin" },
+    "CPIAUCSL":    { units: "pc1" },
+    "FEDFUNDS":    { units: "lin" },
+    "DTWEXBGS":    { units: "lin" },
+    "DGS10":       { units: "lin" },
+    "DGS2":        { units: "lin" },
+    "UNRATE":      { units: "lin" },
+    "PCEPI":       { units: "pc1" },
+    "GDPC1":       { units: "pc1" },
+  };
+  
   const results = [];
 
   // 4. Kéo dữ liệu và lưu vào Database
-  for (const seriesId of indicatorsToFetch) {
-    const data = await fetchFredIndicator(seriesId);
+  for (const [seriesId, config] of Object.entries(SERIES_CONFIG)) {
+    const data = await fetchFredIndicator(seriesId, config.units);
     
     if (data) {
       // Upsert vào Supabase
@@ -66,6 +83,28 @@ export async function GET(request: Request) {
       }
     } else {
       results.push({ seriesId, status: 'failed', error: 'fetch_or_validation_failed' });
+    }
+  }
+
+  // 5. Tính toán chỉ số phái sinh: Net Liquidity (Thanh khoản ròng)
+  // Công thức: Net Liquidity = WALCL - WTREGEN - RRPONTSYD
+  // Chú ý: WALCL và WTREGEN đơn vị là Triệu USD. RRPONTSYD đơn vị là Tỷ USD -> phải nhân 1000
+  const getVal = (id: string) => results.find(r => r.seriesId === id && r.status === 'success')?.value;
+  const walcl = getVal("WALCL");
+  const tga = getVal("WTREGEN");
+  const rrp = getVal("RRPONTSYD");
+
+  if (walcl !== undefined && tga !== undefined && rrp !== undefined) {
+    const netLiq = walcl - tga - (rrp * 1000);
+    const { error } = await supabase.from('market_data').insert({
+      indicator_key: "NET_LIQUIDITY",
+      indicator_value: netLiq,
+      source: "FRED_DERIVED",
+      is_stale: false,
+      recorded_at: new Date().toISOString()
+    });
+    if (!error) {
+      results.push({ seriesId: "NET_LIQUIDITY", status: "success", value: netLiq, stale: false });
     }
   }
 

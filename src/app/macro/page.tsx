@@ -80,12 +80,12 @@ export default async function MacroDashboard() {
             </div>
 
             {/* M2SL */}
-            <div className="p-6 border-2 border-[#1a1a2e] rounded-xl shadow-[4px_4px_0_#1a1a2e] bg-white">
-              <h2 className="text-sm uppercase font-mono font-bold mb-2">Cung Tiền (M2)</h2>
+            <div className={`p-6 border-2 border-[#1a1a2e] rounded-xl shadow-[4px_4px_0_#1a1a2e] ${m2?.indicator_value < 0 ? 'bg-red-50' : 'bg-white'}`}>
+              <h2 className="text-sm uppercase font-mono font-bold mb-2">Cung Tiền (M2) YoY</h2>
               <div className="text-3xl font-black mb-1">
-                {m2 ? new Intl.NumberFormat('en-US', { notation: 'compact' }).format(m2.indicator_value * 1000000000) : 'N/A'}
+                {m2 ? `${m2.indicator_value.toFixed(2)}%` : 'N/A'}
               </div>
-              <div className="text-xs font-mono text-gray-500">Mã: M2SL (Tỷ USD)</div>
+              <div className="text-xs font-mono text-gray-500">Mã: M2SL (% YoY)</div>
             </div>
 
           </div>

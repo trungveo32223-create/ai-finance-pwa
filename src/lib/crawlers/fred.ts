@@ -34,14 +34,14 @@ function isDataStale(dateString: string): boolean {
   return diffInHours > 720; 
 }
 
-export async function fetchFredIndicator(seriesId: string): Promise<FredData | null> {
+export async function fetchFredIndicator(seriesId: string, units: string = "lin"): Promise<FredData | null> {
   const apiKey = process.env.FRED_API_KEY;
   if (!apiKey) {
     console.error("Missing FRED_API_KEY in environment variables.");
     return null;
   }
 
-  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${apiKey}&file_type=json&limit=1&sort_order=desc`;
+  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${apiKey}&file_type=json&limit=1&sort_order=desc&units=${units}`;
 
   try {
     const response = await fetch(url, {
