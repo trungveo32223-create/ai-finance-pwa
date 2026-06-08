@@ -2,7 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // Khởi tạo Supabase (Server Component)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+// Vì đây là Server Component (chạy trên server), ta dùng luôn SERVICE_ROLE_KEY để bypass RLS (Row Level Security)
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export const revalidate = 60; // Cache 60 giây
