@@ -4,7 +4,7 @@ import { processStandard } from '@/lib/agents/Standard';
 import { processDebt } from '@/lib/agents/Debt';
 
 export async function GET() {
-  const results = [];
+  const results: any[] = [];
   let passed = 0;
   let total = 0;
 
