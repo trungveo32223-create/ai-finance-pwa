@@ -57,28 +57,80 @@ async function saveProfile(supabase: SupabaseClient, userId: string | undefined,
 }
 
 async function loadMacroContext(supabase: SupabaseClient): Promise<DebateContext> {
+  const MARKET_KEYS = [
+    "BTC_USD", "ETH_USD", "SPY", "VIX",
+    "CRYPTO_FNG",
+    "POLY_BTC_BULL_PROB",   // MỚI
+    "POLY_RECESSION_PROB",  // MỚI
+  ];
+
   const [reportRes, marketRes] = await Promise.all([
-    supabase.from("cycle_reports").select("liquidity_status,recession_status,ml_clock_phase,allocation_json").order("date", { ascending: false }).limit(1),
-    supabase.from("market_data").select("indicator_key,indicator_value").in("indicator_key", ["BTC_USD", "ETH_USD", "SPY", "VIX", "CRYPTO_FNG"]).order("recorded_at", { ascending: false }),
+    supabase
+      .from("cycle_reports")
+      .select("liquidity_status,recession_status,ml_clock_phase,allocation_json")
+      .order("date", { ascending: false })
+      .limit(1),
+    supabase
+      .from("market_data")
+      .select("indicator_key,indicator_value")
+      .in("indicator_key", MARKET_KEYS)
+      .order("recorded_at", { ascending: false }),
   ]);
+
   let cycleReport: DebateContext["cycleReport"];
   if (!reportRes.error && reportRes.data && reportRes.data.length > 0) {
-    const r = reportRes.data[0] as CycleReportRow;
-    cycleReport = { liquidity_status: r.liquidity_status ?? undefined, recession_status: r.recession_status ?? undefined, ml_clock_phase: r.ml_clock_phase ?? undefined, allocation: r.allocation_json ?? undefined };
+    const r = reportRes.data[0] as {
+      liquidity_status: string | null;
+      recession_status: string | null;
+      ml_clock_phase: string | null;
+      allocation_json: Record<string, number> | null;
+    };
+    cycleReport = {
+      liquidity_status: r.liquidity_status ?? undefined,
+      recession_status: r.recession_status ?? undefined,
+      ml_clock_phase: r.ml_clock_phase ?? undefined,
+      allocation: r.allocation_json ?? undefined,
+    };
   }
+
   const snapshot: Record<string, number> = {};
   let fng: number | null = null;
+  let polyBtcBull: number | null = null;
+  let polyRecession: number | null = null;
+
   if (!marketRes.error && marketRes.data) {
     const seen = new Set<string>();
-    for (const raw of marketRes.data as MarketDataRow[]) {
+    for (const raw of marketRes.data as { indicator_key: string; indicator_value: number }[]) {
       if (seen.has(raw.indicator_key)) continue;
       if (!Number.isFinite(raw.indicator_value)) continue;
       seen.add(raw.indicator_key);
-      if (raw.indicator_key === "CRYPTO_FNG") fng = raw.indicator_value;
-      else snapshot[raw.indicator_key] = raw.indicator_value;
+
+      if (raw.indicator_key === "CRYPTO_FNG") {
+        fng = raw.indicator_value;
+      } else if (raw.indicator_key === "POLY_BTC_BULL_PROB") {
+        polyBtcBull = raw.indicator_value;
+      } else if (raw.indicator_key === "POLY_RECESSION_PROB") {
+        polyRecession = raw.indicator_value;
+      } else {
+        snapshot[raw.indicator_key] = raw.indicator_value;
+      }
     }
   }
-  return { cycleReport, fearGreedIndex: fng, marketSnapshot: snapshot };
+
+  const polymarketSentiment: DebateContext["polymarketSentiment"] =
+    polyBtcBull !== null || polyRecession !== null
+      ? {
+          btcBullishProb: polyBtcBull ?? 0.5,
+          recessionProb: polyRecession ?? 0.5,
+        }
+      : null;
+
+  return {
+    cycleReport,
+    fearGreedIndex: fng,
+    marketSnapshot: snapshot,
+    polymarketSentiment,
+  };
 }
 
 async function handleLedgerFlow(message: string): Promise<string> {
