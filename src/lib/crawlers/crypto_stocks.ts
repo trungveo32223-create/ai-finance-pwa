@@ -8,20 +8,12 @@ export interface MarketData {
   stale?: boolean;
 }
 
-export interface SupabaseLike {
-  from: (table: string) => {
-    select: (columns: string) => {
-      eq: (column: string, value: string) => {
-        order: (column: string, opts: { ascending: boolean }) => {
-          limit: (n: number) => Promise<{
-            data: MarketData[] | null;
-            error: { message: string } | null;
-          }>;
-        };
-      };
-    };
-  };
-}
+/**
+ * Narrow reader: given an indicator key, return its last known numeric value
+ * (or null). Decouples the crawler from the full Supabase client type to avoid
+ * "excessively deep" type instantiation.
+ */
+export type StaleValueReader = (indicatorKey: string) => Promise<number | null>;
 
 export const CRYPTO_STOCK_KEYS = {
   BTC: "BTC_USD",
@@ -86,18 +78,19 @@ async function fetchWithRetry(
   throw lastError;
 }
 
-async function getStaleFallback(supabase: SupabaseLike, indicatorKey: string): Promise<MarketData | null> {
+async function getStaleFallback(
+  readStale: StaleValueReader,
+  indicatorKey: string
+): Promise<MarketData | null> {
   try {
-    const { data, error } = await supabase
-      .from("market_data")
-      .select("id,indicator_key,indicator_value,recorded_at,stale")
-      .eq("indicator_key", indicatorKey)
-      .order("recorded_at", { ascending: false })
-      .limit(1);
-    if (error || !data || data.length === 0) return null;
-    const last = data[0];
-    if (!Number.isFinite(last.indicator_value)) return null;
-    return { indicator_key: indicatorKey, indicator_value: last.indicator_value, recorded_at: new Date().toISOString(), stale: true };
+    const value = await readStale(indicatorKey);
+    if (value === null || !Number.isFinite(value)) return null;
+    return {
+      indicator_key: indicatorKey,
+      indicator_value: value,
+      recorded_at: new Date().toISOString(),
+      stale: true,
+    };
   } catch {
     return null;
   }
@@ -129,16 +122,21 @@ async function fetchFinnhubQuote(baseUrl: string, symbol: string, apiKey: string
 }
 
 async function resolveIndicator(
-  supabase: SupabaseLike, indicatorKey: string, liveFetch: () => Promise<number>
+  readStale: StaleValueReader,
+  indicatorKey: string,
+  liveFetch: () => Promise<number>
 ): Promise<MarketData | null> {
   try {
     return freshPoint(indicatorKey, await liveFetch());
   } catch {
-    return getStaleFallback(supabase, indicatorKey);
+    return getStaleFallback(readStale, indicatorKey);
   }
 }
 
-export async function fetchMarketData(supabase: SupabaseLike, config: CrawlerConfig): Promise<MarketData[]> {
+export async function fetchMarketData(
+  readStale: StaleValueReader,
+  config: CrawlerConfig
+): Promise<MarketData[]> {
   const cfg = {
     binanceBaseUrl: config.binanceBaseUrl ?? DEFAULTS.binanceBaseUrl,
     fngUrl: config.fngUrl ?? DEFAULTS.fngUrl,
@@ -150,14 +148,14 @@ export async function fetchMarketData(supabase: SupabaseLike, config: CrawlerCon
   const t = cfg.perAttemptTimeoutMs, r = cfg.maxRetries;
 
   const cryptoTasks: Array<Promise<MarketData | null>> = [
-    resolveIndicator(supabase, CRYPTO_STOCK_KEYS.BTC, () => fetchBinanceSymbol(cfg.binanceBaseUrl, "BTCUSDT", t, r)),
-    resolveIndicator(supabase, CRYPTO_STOCK_KEYS.ETH, () => fetchBinanceSymbol(cfg.binanceBaseUrl, "ETHUSDT", t, r)),
-    resolveIndicator(supabase, CRYPTO_STOCK_KEYS.FNG, () => fetchFng(cfg.fngUrl, t, r)),
+    resolveIndicator(readStale, CRYPTO_STOCK_KEYS.BTC, () => fetchBinanceSymbol(cfg.binanceBaseUrl, "BTCUSDT", t, r)),
+    resolveIndicator(readStale, CRYPTO_STOCK_KEYS.ETH, () => fetchBinanceSymbol(cfg.binanceBaseUrl, "ETHUSDT", t, r)),
+    resolveIndicator(readStale, CRYPTO_STOCK_KEYS.FNG, () => fetchFng(cfg.fngUrl, t, r)),
   ];
 
   const stockGroup: Promise<Array<MarketData | null>> = (async () => {
-    const spy = await resolveIndicator(supabase, CRYPTO_STOCK_KEYS.SPY, () => fetchFinnhubQuote(cfg.finnhubBaseUrl, "SPY", cfg.finnhubApiKey, t, r));
-    const vix = await resolveIndicator(supabase, CRYPTO_STOCK_KEYS.VIX, () => fetchFinnhubQuote(cfg.finnhubBaseUrl, "^VIX", cfg.finnhubApiKey, t, r));
+    const spy = await resolveIndicator(readStale, CRYPTO_STOCK_KEYS.SPY, () => fetchFinnhubQuote(cfg.finnhubBaseUrl, "SPY", cfg.finnhubApiKey, t, r));
+    const vix = await resolveIndicator(readStale, CRYPTO_STOCK_KEYS.VIX, () => fetchFinnhubQuote(cfg.finnhubBaseUrl, "^VIX", cfg.finnhubApiKey, t, r));
     return [spy, vix];
   })();
 

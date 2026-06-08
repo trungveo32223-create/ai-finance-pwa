@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { fetchMarketData, MarketData } from "@/lib/crawlers/crypto_stocks";
+import { fetchMarketData, MarketData, StaleValueReader } from "@/lib/crawlers/crypto_stocks";
 import { detectCycle, toCycleReportRow } from "@/lib/agents/cycle_detector";
 
 export const runtime = "nodejs";
@@ -31,7 +31,6 @@ async function loadCurrentMacro(supabase: SupabaseClient): Promise<MarketData[]>
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
-  // Optional protection: Vercel Cron secret.
   const secret = process.env.CRON_SECRET;
   if (secret) {
     const auth = req.headers.get("authorization");
@@ -45,20 +44,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: err instanceof Error ? err.message : "config error" }, { status: 500 });
   }
 
+  // Narrow stale reader: isolates the heavy SupabaseClient type from the crawler.
+  const readStale: StaleValueReader = async (indicatorKey: string): Promise<number | null> => {
+    const { data, error } = await supabase
+      .from("market_data")
+      .select("indicator_value")
+      .eq("indicator_key", indicatorKey)
+      .order("recorded_at", { ascending: false })
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    const v = (data[0] as { indicator_value: number }).indicator_value;
+    return Number.isFinite(v) ? v : null;
+  };
+
   try {
-    // 1. Crawl live crypto/stock data and insert.
     const finnhubApiKey = process.env.FINNHUB_API_KEY ?? "";
-    const fetched = await fetchMarketData(supabase, { finnhubApiKey });
+    const fetched = await fetchMarketData(readStale, { finnhubApiKey });
     if (fetched.length > 0) {
       await supabase.from("market_data").insert(fetched);
     }
 
-    // 2. Load latest snapshot (one row per indicator) and run cycle detection.
     const current = await loadCurrentMacro(supabase);
     const report = detectCycle(current);
     const row = toCycleReportRow(report, current);
 
-    // 3. Persist cycle report.
     const { error: insertError } = await supabase.from("cycle_reports").insert(row);
     if (insertError) throw new Error(insertError.message);
 
