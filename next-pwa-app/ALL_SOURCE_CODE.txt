@@ -1,0 +1,1899 @@
+﻿==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\auth\route.ts ====
+import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const { passHash } = await req.json();
+
+    const validHash = process.env.PASSPHRASE_HASH;
+    
+    if (!validHash) {
+      return NextResponse.json({ error: 'Server chÆ°a cÃ i Ä‘áº·t biáº¿n PASSPHRASE_HASH' }, { status: 500 });
+    }
+
+    if (passHash === validHash) {
+      // Set cookie
+      const response = NextResponse.json({ success: true });
+      response.cookies.set({
+        name: 'auth_token',
+        value: passHash,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 365, // 1 year
+      });
+      return response;
+    } else {
+      return NextResponse.json({ error: 'Máº­t kháº©u sai!' }, { status: 401 });
+    }
+  } catch (err) {
+    return NextResponse.json({ error: 'Lá»—i xÃ¡c thá»±c' }, { status: 500 });
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\chat\route.ts ====
+import { NextResponse } from 'next/server';
+import { routeIntent } from '@/lib/agents/Router';
+import { processStandard } from '@/lib/agents/Standard';
+import { processDebt } from '@/lib/agents/Debt';
+import { processQuery } from '@/lib/agents/Query';
+import { MessageContext } from '@/lib/agents/types';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const message = body.message;
+    const history: MessageContext[] = body.history || [];
+
+    if (!message) {
+      return NextResponse.json({ error: 'Missing message' }, { status: 400 });
+    }
+
+    // 1. PhÃ¢n luá»“ng báº±ng Agent_Router
+    const routerParams = await routeIntent(message, history);
+
+    // 2. Chuyá»ƒn hÆ°á»›ng theo NhÃ£n
+    if (routerParams.intent === 'Unclear') {
+      return NextResponse.json({ 
+        action: 'UNCLEAR', 
+        message: routerParams.message || "Xin lá»—i, sáº¿p cÃ³ thá»ƒ nÃ³i rÃµ hÆ¡n khoáº£n nÃ y lÃ  chi tiÃªu hay ná»£ khÃ´ng áº¡?" 
+      });
+    }
+
+    if (routerParams.intent === 'Query') {
+      const result = await processQuery(routerParams);
+      if (result.error) {
+        return NextResponse.json({ action: 'MESSAGE', message: result.error });
+      }
+      return NextResponse.json({ 
+        action: 'REPORT', 
+        data: result 
+      });
+    }
+
+    if (routerParams.intent === 'Standard') {
+      const data = await processStandard(message, history);
+      return NextResponse.json({
+        action: 'CONFIRM_REQUIRED',
+        type: 'Standard',
+        data: data
+      });
+    }
+
+    if (routerParams.intent === 'Debt') {
+      const subType = routerParams.sub_type;
+      if (!subType) throw new Error("Lá»—i Router: Máº¥t sub_type cá»§a luá»“ng Debt");
+      
+      const data = await processDebt(message, subType, history);
+      
+      if (data.error === 'MissingPartner') {
+        return NextResponse.json({
+          action: 'UNCLEAR',
+          message: "Giao dá»‹ch cÃ´ng ná»£ nhÆ°ng em khÃ´ng tháº¥y TÃªn NgÆ°á»i. Sáº¿p giao dá»‹ch vá»›i ai tháº¿ áº¡?"
+        });
+      }
+      
+      if (data.error === 'MissingAmount') {
+        return NextResponse.json({
+          action: 'UNCLEAR',
+          message: "Sáº¿p giao dá»‹ch cÃ´ng ná»£ bao nhiÃªu tiá»n tháº¿ áº¡?"
+        });
+      }
+
+      return NextResponse.json({
+        action: 'CONFIRM_REQUIRED',
+        type: 'Debt',
+        data: data
+      });
+    }
+
+    if (routerParams.intent === 'Valuation') {
+      return NextResponse.json({ action: 'MESSAGE', message: "TÃ­nh nÄƒng cáº­p nháº­t giÃ¡ trá»‹ (Valuation) sáº½ ra máº¯t á»Ÿ Phase 3!" });
+    }
+
+    return NextResponse.json({ action: 'ERROR', message: "KhÃ´ng nháº­n diá»‡n Ä‘Æ°á»£c Ã½ Ä‘á»‹nh." });
+
+  } catch (error: any) {
+    console.error("API Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\cron\crawl-fred\route.ts ====
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { fetchFredIndicator } from '@/lib/crawlers/fred';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: Request) {
+  // 1. XÃ¡c thá»±c Request Ä‘áº¿n tá»« Vercel Cron (Báº£o máº­t)
+  const authHeader = request.headers.get('authorization');
+  const expectedAuthHeader = `Bearer ${process.env.CRON_SECRET}`;
+  
+  const url = new URL(request.url);
+  const isTest = url.searchParams.get('test') === 'true';
+
+  if (!isTest) {
+    if (!process.env.CRON_SECRET) {
+      console.warn("CRON_SECRET is not set in environment variables. Running without auth check.");
+    } else if (authHeader !== expectedAuthHeader) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
+
+  console.log("Starting FRED Macro Data Crawler...");
+
+  // 2. Cáº¥u hÃ¬nh Supabase Admin Client
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return NextResponse.json(
+      { error: 'Supabase configuration missing (NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)' },
+      { status: 500 }
+    );
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  // 3. Danh sÃ¡ch cÃ¡c chá»‰ bÃ¡o Háº±ng Sá»‘ VÄ© MÃ´ (Constants) cáº§n crawl
+  const SERIES_CONFIG: Record<string, { units: string }> = {
+    "M2SL":        { units: "pc1" },
+    "WALCL":       { units: "lin" },
+    "WTREGEN":     { units: "lin" },
+    "RRPONTSYD":   { units: "lin" },
+    "T10Y2Y":      { units: "lin" },
+    "SAHMREALTIME":{ units: "lin" },
+    "BAMLH0A0HYM2":{ units: "lin" },
+    "CPIAUCSL":    { units: "pc1" },
+    "FEDFUNDS":    { units: "lin" },
+    "DTWEXBGS":    { units: "lin" },
+    "DGS10":       { units: "lin" },
+    "DGS2":        { units: "lin" },
+    "UNRATE":      { units: "lin" },
+    "PCEPI":       { units: "pc1" },
+    "GDPC1":       { units: "pc1" },
+  };
+  
+  const results: any[] = [];
+
+  // 4. KÃ©o dá»¯ liá»‡u vÃ  lÆ°u vÃ o Database
+  for (const [seriesId, config] of Object.entries(SERIES_CONFIG)) {
+    const data = await fetchFredIndicator(seriesId, config.units);
+    
+    if (data) {
+      // Upsert vÃ o Supabase
+      // LÆ°u Ã½: ChÃºng ta lÆ°u indicator_key lÃ  DUY NHáº¤T cho láº§n láº¥y má»›i nháº¥t, 
+      // hoáº·c insert má»™t record má»›i theo ngÃ y. 
+      // Äá»ƒ theo dÃµi biá»ƒu Ä‘á»“ lá»‹ch sá»­, ta dÃ¹ng insert (khÃ´ng upsert).
+      const { error } = await supabase
+        .from('market_data')
+        .insert({
+          indicator_key: data.indicator_key,
+          indicator_value: data.indicator_value,
+          source: data.source,
+          is_stale: data.is_stale,
+          recorded_at: data.recorded_at.toISOString(),
+        });
+
+      if (error) {
+        console.error(`Supabase DB Error for ${seriesId}:`, error);
+        results.push({ seriesId, status: 'failed', error: error.message });
+      } else {
+        results.push({ seriesId, status: 'success', value: data.indicator_value, stale: data.is_stale });
+      }
+    } else {
+      results.push({ seriesId, status: 'failed', error: 'fetch_or_validation_failed' });
+    }
+  }
+
+  // 5. TÃ­nh toÃ¡n chá»‰ sá»‘ phÃ¡i sinh: Net Liquidity (Thanh khoáº£n rÃ²ng)
+  // CÃ´ng thá»©c: Net Liquidity = WALCL - WTREGEN - RRPONTSYD
+  // ChÃº Ã½: WALCL vÃ  WTREGEN Ä‘Æ¡n vá»‹ lÃ  Triá»‡u USD. RRPONTSYD Ä‘Æ¡n vá»‹ lÃ  Tá»· USD -> pháº£i nhÃ¢n 1000
+  const getVal = (id: string) => results.find(r => r.seriesId === id && r.status === 'success')?.value;
+  const walcl = getVal("WALCL");
+  const tga = getVal("WTREGEN");
+  const rrp = getVal("RRPONTSYD");
+
+  if (walcl !== undefined && tga !== undefined && rrp !== undefined) {
+    const netLiq = walcl - tga - (rrp * 1000);
+    const { error } = await supabase.from('market_data').insert({
+      indicator_key: "NET_LIQUIDITY",
+      indicator_value: netLiq,
+      source: "FRED_DERIVED",
+      is_stale: false,
+      recorded_at: new Date().toISOString()
+    });
+    if (!error) {
+      results.push({ seriesId: "NET_LIQUIDITY", status: "success", value: netLiq, stale: false });
+    }
+  }
+
+  console.log("FRED Crawler Finished.", results);
+
+  return NextResponse.json({
+    success: true,
+    message: 'Crawl operation completed',
+    results,
+  });
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\cron\daily-sync\route.ts ====
+import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { scrapeVnEconomyRSS, scrapeCafeFRSS } from '@/lib/news/scraper';
+import { extractNewsLogicWithGemini } from '@/lib/news/gemini_extractor';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: Request) {
+  const url = new URL(request.url);
+  const isTest = url.searchParams.get('test') === 'true';
+
+  if (!isTest) {
+    const authHeader = request.headers.get('authorization');
+    const expectedAuthHeader = `Bearer ${process.env.CRON_SECRET}`;
+    if (!process.env.CRON_SECRET) {
+      console.warn("CRON_SECRET is not set.");
+    } else if (authHeader !== expectedAuthHeader) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return NextResponse.json({ error: 'Supabase configuration missing' }, { status: 500 });
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  console.log("Starting Daily Sync (Phase 2)...");
+  
+  // 1. CÃ o tin tá»©c thÃ´
+  const vneNews = await scrapeVnEconomyRSS();
+  const cafefNews = await scrapeCafeFRSS();
+  const allNews = [...vneNews, ...cafefNews];
+  
+  const processedNews: any[] = [];
+
+  // 2. Cháº¡y Gemini bÃ³c tÃ¡ch tá»«ng tin
+  for (const item of allNews) {
+    // Kiá»ƒm tra xem tin Ä‘Ã£ tá»“n táº¡i trong DB chÆ°a (dá»±a trÃªn URL)
+    const { data: existing } = await supabase
+      .from('news_digest')
+      .select('id')
+      .eq('url', item.url)
+      .single();
+      
+    if (existing) {
+      continue; // ÄÃ£ cÃ o vÃ  phÃ¢n tÃ­ch rá»“i thÃ¬ bá» qua
+    }
+
+    const aiAnalysis = await extractNewsLogicWithGemini(item.title, item.raw_content);
+    
+    if (aiAnalysis) {
+      const { error } = await supabase
+        .from('news_digest')
+        .insert({
+          title: item.title,
+          url: item.url,
+          source: item.source,
+          published_at: item.published_at.toISOString(),
+          sentiment: aiAnalysis.sentiment,
+          impacted_entities: aiAnalysis.impacted_entities,
+          summary: aiAnalysis.summary,
+          raw_content: item.raw_content,
+        });
+
+      if (!error) {
+        processedNews.push({ title: item.title, analysis: aiAnalysis });
+      } else {
+        console.error("Lá»—i insert news:", error);
+      }
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: 'Daily Sync Phase 2 completed',
+    news_processed: processedNews.length,
+    results: processedNews
+  });
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\run-tests\route.ts ====
+import { NextResponse } from 'next/server';
+import { routeIntent } from '@/lib/agents/Router';
+import { processStandard } from '@/lib/agents/Standard';
+import { processDebt } from '@/lib/agents/Debt';
+
+export async function GET() {
+  const results: any[] = [];
+  let passed = 0;
+  let total = 0;
+
+  function assert(condition: boolean, msg: string) {
+    total++;
+    results.push({ status: condition ? 'PASS' : 'FAIL', msg });
+    if (condition) passed++;
+  }
+
+  try {
+    // [R] Router Tests
+    let r1 = await routeIntent("Mua gáº¡o 100k");
+    assert(r1.intent === 'Standard', 'Router: "Mua gáº¡o 100k" -> intent: Standard');
+
+    let r2 = await routeIntent("Vay Nam 5tr");
+    assert(r2.intent === 'Debt' && r2.sub_type === 'Borrow', 'Router: "Vay Nam 5tr" -> intent: Debt, sub_type: Borrow');
+
+    let r3 = await routeIntent("Tá»•ng chi hÃ´m nay");
+    assert(r3.intent === 'Query' && r3.query_type === 'metric', 'Router: "Tá»•ng chi hÃ´m nay" -> intent: Query, query_type: metric');
+
+    let r4 = await routeIntent("chuyá»ƒn 50k");
+    assert(r4.intent === 'Unclear', 'Router: "chuyá»ƒn 50k" -> intent: Unclear');
+
+    // [S] Standard Tests
+    let s1 = await processStandard("Tiá»n Ä‘iá»‡n 500k");
+    assert(s1.so_tien === 500000 && s1.phan_loai === 'Chi phÃ­', 'Standard: "Tiá»n Ä‘iá»‡n 500k" -> 500k, Chi phÃ­');
+
+    let s2 = await processStandard("LÆ°Æ¡ng thÃ¡ng nÃ y 20 cá»§");
+    assert(s2.so_tien === 20000000 && s2.phan_loai === 'Thu nháº­p', 'Standard: "LÆ°Æ¡ng thÃ¡ng nÃ y 20 cá»§" -> 20tr, Thu nháº­p');
+
+    let s3 = await processStandard("RÃºt tiáº¿t kiá»‡m 5tr");
+    assert(s3.so_tien === -5000000 && s3.phan_loai === 'Tiáº¿t kiá»‡m', 'Standard: "RÃºt tiáº¿t kiá»‡m 5tr" -> -5tr, Tiáº¿t kiá»‡m');
+
+    let s4 = await processStandard("Mua cá»• phiáº¿u VNM 10 cá»§");
+    assert(s4.so_tien === 10000000 && s4.phan_loai === 'Äáº§u tÆ° (Vá»‘n)', 'Standard: "Mua cá»• phiáº¿u VNM 10 cá»§" -> 10tr, Äáº§u tÆ° (Vá»‘n)');
+
+    // [D] Debt Tests
+    let d1 = await processDebt("Vay TÃ¹ng 200k", "Borrow");
+    assert(d1.ma_bp?.toLowerCase() === 'tÃ¹ng' && d1.so_tien === 200000 && d1.sub_type === 'Borrow', 'Debt: "Vay TÃ¹ng 200k" -> TÃ¹ng, 200k, Borrow');
+
+    let d2 = await processDebt("TÃ¹ng tráº£ ná»£ 100k", "CollectPrincipal");
+    assert(d2.ma_bp?.toLowerCase() === 'tÃ¹ng' && d2.so_tien === 100000 && d2.sub_type === 'CollectPrincipal', 'Debt: "TÃ¹ng tráº£ ná»£ 100k" -> TÃ¹ng, 100k, CollectPrincipal');
+
+    let d3 = await processDebt("Vay 500k", "Borrow");
+    assert((d3 as any).error === 'MissingPartner', 'Debt: "Vay 500k" -> Lá»—i MissingPartner');
+
+    return NextResponse.json({
+      success: passed === total,
+      score: `${passed}/${total}`,
+      results
+    });
+  } catch (error: any) {
+    return NextResponse.json({
+      success: false,
+      error: error.message,
+      results
+    }, { status: 500 });
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\api\transactions\route.ts ====
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+
+const VALID_PHAN_LOAI = ["Thu nháº­p", "Chi phÃ­", "Tiáº¿t kiá»‡m", "Äáº§u tÆ° (Vá»‘n)", "Äáº§u tÆ° (Thá»‹ giÃ¡)", "CÃ´ng ná»£"];
+
+function validateTx(txData: any) {
+  if (typeof txData.so_tien !== 'number' || isNaN(txData.so_tien)) {
+    throw new Error("Sá»‘ tiá»n (so_tien) pháº£i lÃ  kiá»ƒu sá»‘ há»£p lá»‡.");
+  }
+  // Cho phÃ©p rÃºt tiáº¿t kiá»‡m lÃ  sá»‘ Ã¢m
+  if (txData.so_tien <= 0 && txData.phan_loai !== 'Tiáº¿t kiá»‡m') {
+    throw new Error("Sá»‘ tiá»n giao dá»‹ch pháº£i lá»›n hÆ¡n 0.");
+  }
+  if (!VALID_PHAN_LOAI.includes(txData.phan_loai)) {
+    throw new Error(`Loáº¡i giao dá»‹ch khÃ´ng há»£p lá»‡: ${txData.phan_loai}. Vui lÃ²ng phÃ¢n loáº¡i Ä‘Ãºng CÃ¢y Danh Má»¥c.`);
+  }
+  if (txData.tx_date && isNaN(Date.parse(txData.tx_date))) {
+    throw new Error("NgÃ y giao dá»‹ch (tx_date) khÃ´ng há»£p lá»‡.");
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const { txData } = await req.json();
+    
+    // Server-side validation
+    validateTx(txData);
+    
+    // LÆ°u vÃ o báº£ng transactions
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert([txData])
+      .select('id')
+      .single();
+
+    if (error) throw error;
+    
+    return NextResponse.json({ success: true, txId: data.id });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const txId = searchParams.get('txId');
+    
+    if (!txId) {
+      // XÃ³a giao dá»‹ch gáº§n nháº¥t (fallback báº±ng text "Undo")
+      const { data: latest, error: fetchErr } = await supabase
+        .from('transactions')
+        .select('id')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
+      if (fetchErr) throw fetchErr;
+      
+      const { error: delErr } = await supabase.from('transactions').delete().eq('id', latest.id);
+      if (delErr) throw delErr;
+      
+      return NextResponse.json({ success: true, message: 'ÄÃ£ hoÃ n tÃ¡c giao dá»‹ch cuá»‘i.' });
+    } else {
+      // XÃ³a theo ID cá»¥ thá»ƒ
+      const { error } = await supabase.from('transactions').delete().eq('id', txId);
+      if (error) throw error;
+      
+      return NextResponse.json({ success: true, message: 'ÄÃ£ hoÃ n tÃ¡c giao dá»‹ch.' });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\macro\page.tsx ====
+import { createClient } from '@supabase/supabase-js';
+
+// Khá»Ÿi táº¡o Supabase (Server Component)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+export const revalidate = 60; // Cache 60 giÃ¢y
+
+export default async function MacroDashboard() {
+  // Láº¥y dá»¯ liá»‡u má»›i nháº¥t tá»« market_data
+  const { data: indicators, error } = await supabase
+    .from('market_data')
+    .select('*')
+    .order('recorded_at', { ascending: false })
+    .limit(10);
+
+  if (error) {
+    console.error("Lá»—i láº¥y dá»¯ liá»‡u:", error);
+  }
+
+  // Lá»c ra cÃ¡c chá»‰ sá»‘ má»›i nháº¥t (distinct)
+  const latestData = new Map();
+  if (indicators) {
+    indicators.forEach((ind: any) => {
+      if (!latestData.has(ind.indicator_key)) {
+        latestData.set(ind.indicator_key, ind);
+      }
+    });
+  }
+
+  const getIndicator = (key: string) => latestData.get(key);
+
+  const yieldCurve = getIndicator('T10Y2Y');
+  const sahmRule = getIndicator('SAHMREALTIME');
+  const m2 = getIndicator('M2SL');
+
+  return (
+    <div className="min-h-screen bg-[#faf9f6] text-[#1a1a2e] p-8 font-serif">
+      <div className="max-w-4xl mx-auto">
+        <header className="mb-12 border-b-2 border-[#1a1a2e] pb-6">
+          <div className="text-xs uppercase tracking-[0.3em] font-mono mb-2 text-gray-500">
+            PHASE 1 USE CASE
+          </div>
+          <h1 className="text-4xl font-extrabold mb-4">Macro Intelligence Dashboard</h1>
+          <p className="text-lg opacity-80 italic">
+            Dá»¯ liá»‡u vÄ© mÃ´ thá»i gian thá»±c Ä‘Æ°á»£c láº¥y tá»± Ä‘á»™ng tá»« Federal Reserve (FRED) qua Vercel Cron.
+          </p>
+        </header>
+
+        {(!yieldCurve && !sahmRule && !m2) ? (
+          <div className="bg-yellow-100 border-l-4 border-yellow-500 p-6 text-yellow-900 font-mono text-sm">
+            Há»‡ thá»‘ng chÆ°a cÃ³ dá»¯ liá»‡u. HÃ£y cháº¡y Crawler báº±ng cÃ¡ch gá»i API /api/cron/crawl-fred vá»›i CRON_SECRET.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            {/* T10Y2Y */}
+            <div className={`p-6 border-2 border-[#1a1a2e] rounded-xl shadow-[4px_4px_0_#1a1a2e] ${yieldCurve?.indicator_value < 0 ? 'bg-red-50' : 'bg-white'}`}>
+              <h2 className="text-sm uppercase font-mono font-bold mb-2">ÄÆ°á»ng cong lá»£i suáº¥t</h2>
+              <div className="text-3xl font-black mb-1">{yieldCurve?.indicator_value || 'N/A'}%</div>
+              <div className="text-xs font-mono text-gray-500">MÃ£: T10Y2Y</div>
+              {yieldCurve?.indicator_value < 0 && (
+                <div className="mt-4 text-xs font-bold text-red-600 bg-red-100 p-2 rounded">
+                  Cáº¢NH BÃO: Äáº£o ngÆ°á»£c (Recession Indicator)
+                </div>
+              )}
+            </div>
+
+            {/* SAHM RULE */}
+            <div className={`p-6 border-2 border-[#1a1a2e] rounded-xl shadow-[4px_4px_0_#1a1a2e] ${sahmRule?.indicator_value >= 0.5 ? 'bg-red-50' : 'bg-white'}`}>
+              <h2 className="text-sm uppercase font-mono font-bold mb-2">Sahm Rule (Suy thoÃ¡i)</h2>
+              <div className="text-3xl font-black mb-1">{sahmRule?.indicator_value || 'N/A'}</div>
+              <div className="text-xs font-mono text-gray-500">MÃ£: SAHMREALTIME</div>
+              {sahmRule?.indicator_value >= 0.5 && (
+                <div className="mt-4 text-xs font-bold text-red-600 bg-red-100 p-2 rounded">
+                  Cáº¢NH BÃO: Kinh táº¿ bÆ°á»›c vÃ o suy thoÃ¡i
+                </div>
+              )}
+            </div>
+
+            {/* M2SL */}
+            <div className={`p-6 border-2 border-[#1a1a2e] rounded-xl shadow-[4px_4px_0_#1a1a2e] ${m2?.indicator_value < 0 ? 'bg-red-50' : 'bg-white'}`}>
+              <h2 className="text-sm uppercase font-mono font-bold mb-2">Cung Tiá»n (M2) YoY</h2>
+              <div className="text-3xl font-black mb-1">
+                {m2 ? `${m2.indicator_value.toFixed(2)}%` : 'N/A'}
+              </div>
+              <div className="text-xs font-mono text-gray-500">MÃ£: M2SL (% YoY)</div>
+            </div>
+
+          </div>
+        )}
+
+        <footer className="mt-16 text-center text-xs font-mono text-gray-400">
+          Há»‡ thá»‘ng cháº¡y tá»± Ä‘á»™ng vÃ o 03:00 sÃ¡ng má»—i ngÃ y. ÄÆ°á»£c phÃ¢n tÃ­ch bá»Ÿi MECE Framework.
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\globals.css ====
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background-color: #525252; border-radius: 10px; }
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\layout.tsx ====
+import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "AI Finance PWA",
+  description: "Trá»£ lÃ½ tÃ i chÃ­nh cÃ¡ nhÃ¢n siÃªu tá»‘c Ä‘á»™",
+  manifest: "/manifest.json",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="vi">
+      <body className="antialiased bg-gray-50 text-gray-900">
+        {children}
+      </body>
+    </html>
+  );
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\app\page.tsx ====
+'use client';
+
+import { useState, useRef, useEffect } from 'react';
+import { Send, Loader2, Wallet, Lock, XCircle, CheckCircle, ChevronDown, ChevronUp } from 'lucide-react';
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  isConfirmCard?: boolean;
+  confirmData?: any;
+  confirmType?: 'Standard' | 'Debt';
+  isUnclear?: boolean;
+  isReport?: boolean;
+  reportData?: any;
+}
+
+// Simple SHA-256 hash
+async function sha256(message: string) {
+  const msgBuffer = new TextEncoder().encode(message);                    
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
+
+function ReportCard({ data }: { data: any }) {
+  const [showTable, setShowTable] = useState(false);
+
+  if (data.type === 'debt') {
+    return (
+      <div className="mt-2 w-full">
+        <p className="whitespace-pre-wrap mb-2">{data.message}</p>
+        {data.total_count > 0 && (
+          <div className="mt-3">
+            <button 
+              onClick={() => setShowTable(!showTable)}
+              className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors"
+            >
+              {showTable ? <><ChevronUp size={16} className="mr-1"/> â¬†ï¸ Thu gá»n</> : <><ChevronDown size={16} className="mr-1"/> ðŸ“‹ Xem chi tiáº¿t ({data.total_count} GD)</>}
+            </button>
+            
+            {showTable && (
+              <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Metric
+  const dongTienStr = data.summary.dongTien > 0 ? `+${data.summary.dongTien.toLocaleString('vi-VN')}` : data.summary.dongTien.toLocaleString('vi-VN');
+  
+  return (
+    <div className="mt-2 w-full bg-neutral-900 rounded-xl border border-neutral-700 p-4">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xl">ðŸ“Š</span>
+        <h3 className="font-bold text-white">{data.title}</h3>
+      </div>
+      <p className="text-xs text-neutral-400 mb-4">{data.periodStr}</p>
+      
+      <div className="space-y-2 text-sm mb-4">
+        <div className="flex justify-between"><span className="text-neutral-400">ðŸ’° Tá»•ng thu:</span> <span className="font-semibold text-emerald-400">{data.summary.thu.toLocaleString('vi-VN')} Ä‘</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">ðŸ’¸ Tá»•ng chi:</span> <span className="font-semibold text-red-400">{data.summary.chi.toLocaleString('vi-VN')} Ä‘</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">ðŸ¦ Tiáº¿t kiá»‡m:</span> <span>{data.summary.tietKiem.toLocaleString('vi-VN')} Ä‘</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">ðŸ“ˆ Äáº§u tÆ°:</span> <span>{data.summary.dauTu.toLocaleString('vi-VN')} Ä‘</span></div>
+      </div>
+      
+      <div className="border-t border-neutral-700 pt-3 pb-1 mb-2">
+        <div className="flex justify-between items-center">
+          <span className="font-bold text-sm text-neutral-300">DÃ’NG TIá»€N THUáº¦N:</span>
+          <span className={`font-bold ${data.summary.dongTien >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {dongTienStr} Ä‘
+          </span>
+        </div>
+      </div>
+
+      {data.total_count > 0 && (
+        <div className="mt-4 pt-3 border-t border-neutral-800">
+          <button 
+            onClick={() => setShowTable(!showTable)}
+            className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors w-full justify-center"
+          >
+            {showTable ? <><ChevronUp size={16} className="mr-1"/> â¬†ï¸ Thu gá»n</> : <><ChevronDown size={16} className="mr-1"/> ðŸ“‹ Xem chi tiáº¿t ({data.total_count} GD)</>}
+          </button>
+          
+          {showTable && (
+            <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactCheckTable({ rawData, totalCount }: { rawData: any[], totalCount: number }) {
+  return (
+    <div className="mt-3 w-full animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="max-h-[320px] overflow-y-auto overflow-x-auto border border-neutral-700 rounded-lg custom-scrollbar bg-neutral-900/50">
+        <table className="w-full min-w-[380px] text-[13px] border-collapse text-left">
+          <thead className="sticky top-0 bg-neutral-800 z-10 shadow-sm">
+            <tr>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">NgÃ y</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Loáº¡i</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-right text-neutral-300">Tiá»n</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Ghi chÃº</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rawData.map((row, idx) => {
+              // Parse date to dd/mm
+              const dateStr = row.tx_date ? row.tx_date.split('-').slice(1).reverse().join('/') : '--/--';
+              // Loáº¡i (Lv2 or SubType)
+              let typeStr = row.lv2 || row.sub_type || row.phan_loai;
+              if (row.ma_bp) typeStr = row.ma_bp.replace('Má»šI - ', '');
+              
+              const isPositive = row.phan_loai === 'Thu nháº­p' || row.sub_type === 'CollectInterest';
+              const isNegative = row.phan_loai === 'Chi phÃ­' || row.sub_type === 'RepayInterest';
+              const colorClass = isPositive ? 'text-emerald-400' : (isNegative ? 'text-red-400' : 'text-neutral-300');
+
+              return (
+                <tr key={idx} className="hover:bg-neutral-800/50 transition-colors">
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap text-neutral-400">{dateStr}</td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap truncate max-w-[80px]" title={typeStr}>{typeStr}</td>
+                  <td className={`p-2 border-b border-neutral-800 whitespace-nowrap text-right font-medium ${colorClass}`}>
+                    {row.so_tien.toLocaleString('vi-VN')} Ä‘
+                  </td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-normal max-w-[120px]">
+                    <div className="truncate" title={row.ghi_chu}>{row.ghi_chu}</div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {totalCount > 10 && (
+        <p className="text-[11px] text-center text-neutral-500 mt-2 italic">
+          Hiá»ƒn thá»‹ 10/{totalCount} giao dá»‹ch má»›i nháº¥t
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ConfirmCard({ msg, msgIndex, handleConfirm, handleCancel }: { msg: any, msgIndex: number, handleConfirm: any, handleCancel: any }) {
+  const [partnerMode, setPartnerMode] = useState<'text' | 'input'>('text');
+  const [partnerName, setPartnerName] = useState(msg.confirmData?.ma_bp || '');
+
+  const onConfirm = () => {
+    const updatedData = { ...msg.confirmData };
+    if (msg.confirmType === 'Debt') {
+      updatedData.ma_bp = partnerName;
+    }
+    handleConfirm(msgIndex, updatedData, msg.confirmType);
+  };
+
+  return (
+    <div className="mt-3 p-3 bg-neutral-900 rounded-xl border border-neutral-700 text-sm">
+      {msg.confirmType === 'Standard' ? (
+        <>
+          <p><span className="text-neutral-400">Loáº¡i:</span> {msg.confirmData.phan_loai}</p>
+          <p><span className="text-neutral-400">Danh má»¥c:</span> {msg.confirmData.lv1} {'>'} {msg.confirmData.lv2}</p>
+        </>
+      ) : (
+        <>
+          <p><span className="text-neutral-400">Loáº¡i ná»£:</span> {msg.confirmData.sub_type}</p>
+          <div className="flex items-center gap-2 mt-1 mb-1">
+            <span className="text-neutral-400">Äá»‘i tÃ¡c:</span>
+            {partnerMode === 'text' ? (
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{partnerName}</span>
+                <button onClick={() => setPartnerMode('input')} className="text-xs text-emerald-400 hover:text-emerald-300">
+                  âœï¸ Sá»­a
+                </button>
+              </div>
+            ) : (
+              <input 
+                autoFocus
+                type="text" 
+                value={partnerName} 
+                onChange={e => setPartnerName(e.target.value)} 
+                className="bg-neutral-800 border border-neutral-600 rounded px-2 py-1 text-white text-xs outline-none focus:border-emerald-500 flex-1"
+                placeholder="Nháº­p Ä‘á»‘i tÃ¡c má»›i..."
+              />
+            )}
+          </div>
+        </>
+      )}
+      <p><span className="text-neutral-400">Sá»‘ tiá»n:</span> <span className="font-bold text-emerald-400">{msg.confirmData.so_tien.toLocaleString()}Ä‘</span></p>
+      <p><span className="text-neutral-400">Ghi chÃº:</span> {msg.confirmData.ghi_chu}</p>
+      
+      <div className="flex gap-2 mt-4">
+        <button onClick={onConfirm} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <CheckCircle size={16} /> Thá»±c Hiá»‡n
+        </button>
+        <button onClick={() => handleCancel(msgIndex)} className="flex-1 bg-red-600/80 hover:bg-red-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <XCircle size={16} /> Há»§y
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function ChatPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  const [messages, setMessages] = useState<Message[]>([
+    { role: 'assistant', content: 'ChÃ o sáº¿p! Sáº¿p muá»‘n ghi sá»• hay tra cá»©u gÃ¬ hÃ´m nay áº¡?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (document.cookie.includes('auth_token=')) {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const hash = await sha256(passphrase);
+    
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passHash: hash })
+    });
+
+    if (res.ok) {
+      setIsAuthenticated(true);
+    } else {
+      const data = await res.json();
+      setAuthError(data.error || 'Sai máº­t kháº©u!');
+    }
+  };
+
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = input;
+    setInput('');
+    const newMessages = [...messages, { role: 'user' as const, content: userMessage }];
+    setMessages(newMessages);
+    setIsLoading(true);
+
+    try {
+      if (userMessage.toLowerCase().includes('xÃ³a cÃ¡i vá»«a rá»“i') || userMessage.toLowerCase() === 'undo') {
+        const res = await fetch('/api/transactions', { method: 'DELETE' });
+        const data = await res.json();
+        setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+        setIsLoading(false);
+        return;
+      }
+
+      const history = newMessages.slice(-5).map(m => ({ role: m.role, content: m.content }));
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage, history })
+      });
+
+      if (res.status === 401) {
+        setIsAuthenticated(false);
+        setIsLoading(false);
+        return;
+      }
+
+      const data = await res.json();
+
+      if (data.action === 'UNCLEAR' || data.action === 'MESSAGE') {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+      } else if (data.action === 'CONFIRM_REQUIRED') {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: 'Sáº¿p kiá»ƒm tra láº¡i thÃ´ng tin trÆ°á»›c khi ghi sá»• nhÃ©:',
+          isConfirmCard: true,
+          confirmData: data.data,
+          confirmType: data.type
+        }]);
+      } else if (data.action === 'REPORT') {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: '',
+          isReport: true,
+          reportData: data.data
+        }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.error || 'Lá»—i há»‡ thá»‘ng' }]);
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Lá»—i káº¿t ná»‘i mÃ¡y chá»§.' }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleConfirm = async (msgIndex: number, txData: any, type: string) => {
+    setIsLoading(true);
+    try {
+      const dbData = type === 'Standard' ? {
+        phan_loai: txData.phan_loai,
+        lv1: txData.lv1,
+        lv2: txData.lv2,
+        so_tien: txData.so_tien,
+        ghi_chu: txData.ghi_chu,
+        tx_date: txData.ngay
+      } : {
+        phan_loai: 'CÃ´ng ná»£',
+        sub_type: txData.sub_type,
+        ma_bp: txData.ma_bp,
+        so_tien: txData.so_tien,
+        ghi_chu: txData.ghi_chu,
+        tx_date: txData.ngay
+      };
+
+      const res = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txData: dbData })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[msgIndex] = { role: 'assistant', content: `âœ… ÄÃ£ ghi sá»• thÃ nh cÃ´ng! (ID: ${data.txId})` };
+          return updated;
+        });
+      }
+    } catch (err) {
+      alert("Lá»—i khi lÆ°u!");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancel = (msgIndex: number) => {
+    setMessages(prev => {
+      const updated = [...prev];
+      updated[msgIndex] = { role: 'assistant', content: 'ðŸš« ÄÃ£ há»§y giao dá»‹ch.' };
+      return updated;
+    });
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="flex h-screen bg-neutral-900 text-white items-center justify-center p-4">
+        <form onSubmit={handleLogin} className="bg-neutral-800 p-8 rounded-2xl w-full max-w-sm flex flex-col gap-4">
+          <div className="flex justify-center mb-4"><Lock size={48} className="text-emerald-500" /></div>
+          <h1 className="text-2xl font-bold text-center">XÃ¡c Thá»±c</h1>
+          <input 
+            type="password" 
+            value={passphrase} 
+            onChange={(e) => setPassphrase(e.target.value)}
+            placeholder="Nháº­p Passphrase..." 
+            className="p-3 rounded-lg bg-neutral-700 text-white outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          {authError && <p className="text-red-400 text-sm text-center">{authError}</p>}
+          <button type="submit" className="bg-emerald-600 p-3 rounded-lg font-bold mt-2 hover:bg-emerald-500">Má»Ÿ KhÃ³a</button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen bg-neutral-900 text-white font-sans max-w-md mx-auto shadow-2xl relative overflow-hidden">
+      <header className="flex items-center justify-center p-4 bg-neutral-800/80 backdrop-blur border-b border-neutral-700/50 sticky top-0 z-10">
+        <Wallet className="w-6 h-6 mr-2 text-emerald-400" />
+        <h1 className="text-lg font-bold tracking-wide">AI Finance App</h1>
+      </header>
+
+      <main className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth pb-24">
+        {messages.map((msg, index) => (
+          <div key={index} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+            <div className={`px-4 py-3 max-w-[90%] rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-tr-sm' : 'bg-neutral-800 text-neutral-100 rounded-tl-sm w-full'}`}>
+              
+              {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+              
+              {msg.isReport && msg.reportData && (
+                <ReportCard data={msg.reportData} />
+              )}
+
+              {msg.isConfirmCard && msg.confirmData && (
+                <ConfirmCard 
+                  msg={msg} 
+                  msgIndex={index} 
+                  handleConfirm={handleConfirm} 
+                  handleCancel={handleCancel} 
+                />
+              )}
+            </div>
+          </div>
+        ))}
+        {isLoading && (
+          <div className="flex items-start">
+            <div className="bg-neutral-800 p-3 rounded-2xl rounded-tl-sm shadow-sm flex items-center gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
+              <span className="text-neutral-400 text-sm">Äang truy xuáº¥t...</span>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </main>
+
+      <footer className="p-3 bg-neutral-800/90 backdrop-blur border-t border-neutral-700/50 absolute bottom-0 w-full">
+        <form onSubmit={handleSend} className="flex items-end gap-2 bg-neutral-900 p-1.5 rounded-3xl border border-neutral-700 focus-within:border-emerald-500/50 transition-colors">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="VÃ­ dá»¥: Ná»£ TÃ¹ng bao nhiÃªu..."
+            className="flex-1 bg-transparent border-none text-white focus:ring-0 px-4 py-2 text-sm outline-none"
+            disabled={isLoading}
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || isLoading}
+            className="bg-emerald-600 text-white p-2.5 rounded-full hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 transition-colors shadow-sm shrink-0"
+          >
+            <Send className="w-5 h-5 ml-0.5" />
+          </button>
+        </form>
+      </footer>
+    </div>
+  );
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\agents\Debt.ts ====
+import { DebtResult, DebtSubType, MessageContext } from './types';
+
+const DEEPSEEK_KEYS = [process.env.DEEPSEEK_KEY_1, process.env.DEEPSEEK_KEY_2].filter(Boolean) as string[];
+let currentDeepseekIndex = 0;
+
+function getNextDeepseekKey() {
+  if (DEEPSEEK_KEYS.length === 0) throw new Error('Missing DEEPSEEK_KEY');
+  const key = DEEPSEEK_KEYS[currentDeepseekIndex];
+  currentDeepseekIndex = (currentDeepseekIndex + 1) % DEEPSEEK_KEYS.length;
+  return key;
+}
+
+export async function processDebt(message: string, sub_type: DebtSubType, contextHistory: MessageContext[] = []): Promise<DebtResult> {
+  const apiKey = getNextDeepseekKey();
+  
+  const contextText = contextHistory.length > 0 
+    ? `\nLá»‹ch sá»­ trÃ² chuyá»‡n gáº§n Ä‘Ã¢y:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `Báº¡n lÃ  Agent_Debt chuyÃªn bÃ³c tÃ¡ch giao dá»‹ch CÃ”NG Ná»¢ (Gá»‘c vÃ  LÃ£i).
+Loáº¡i giao dá»‹ch hiá»‡n táº¡i Ä‘Ã£ Ä‘Æ°á»£c Router xÃ¡c Ä‘á»‹nh lÃ : ${sub_type}
+Ã nghÄ©a:
+- Borrow: MÃ¬nh Ä‘i vay.
+- Lend: MÃ¬nh cho vay.
+- RepayPrincipal: MÃ¬nh tráº£ ná»£ gá»‘c.
+- CollectPrincipal: Thu ná»£ gá»‘c.
+- RepayInterest: Tráº£ tiá»n lÃ£i.
+- CollectInterest: Thu tiá»n lÃ£i.
+
+Báº¢NG QUY Äá»”I Sá» TIá»€N (Slang):
+- k, nghÃ¬n, ngÃ n, cÃ nh, ca -> x 1.000 (VÃ­ dá»¥: 5 ca = 5000)
+- xá»‹, lÃ­t -> x 100.000 (VÃ­ dá»¥: 3 xá»‹ = 300000)
+- tr, triá»‡u, chai, cá»§, cu -> x 1.000.000 (VÃ­ dá»¥: 2 cá»§ = 2000000)
+- chá»¥c (Ä‘á»©ng má»™t mÃ¬nh) -> x 10.000 (VÃ­ dá»¥: 5 chá»¥c = 50000)
+- chá»¥c cá»§/triá»‡u -> x 10.000.000 (VÃ­ dá»¥: 2 chá»¥c cá»§ = 20000000)
+
+QUY Táº®C BÃ“C TÃCH:
+- ma_bp: Báº¯t buá»™c pháº£i trÃ­ch xuáº¥t Ä‘Æ°á»£c TÃŠN NGÆ¯á»œI / Tá»” CHá»¨C. Náº¿u KHÃ”NG tÃ¬m tháº¥y tÃªn, tráº£ vá» JSON vá»›i key "error": "MissingPartner". TUYá»†T Äá»I KHÃ”NG tráº£ "ma_bp": "" hoáº·c "-".
+- so_tien: Báº¯t buá»™c lÃ  Sá» NGUYÃŠN (Integer). Náº¿u khÃ´ng tÃ¬m tháº¥y sá»‘ tiá»n, tráº£ vá» JSON vá»›i key "error": "MissingAmount".
+- ghi_chu: Giá»¯ nguyÃªn vÄƒn hoáº·c tÃ³m táº¯t ngáº¯n.
+- ngay: Tráº£ vá» YYYY-MM-DD. (HÃ´m nay lÃ : ${new Date().toISOString().split('T')[0]})
+
+Äáº¦U VÃ€O Tá»ª USER: "${message}"${contextText}
+
+TRáº¢ Vá»€ DUY NHáº¤T 1 CHUá»–I JSON THEO Cáº¤U TRÃšC:
+{
+  "sub_type": "${sub_type}",
+  "ma_bp": "TÃ¹ng",
+  "so_tien": 500000,
+  "ghi_chu": "Vay tiá»n",
+  "ngay": "2026-06-05"
+}
+
+HOáº¶C Náº¾U Lá»–I:
+{
+  "error": "MissingPartner"
+}`;
+
+  try {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i (DeepSeek), vui lÃ²ng thá»­ láº¡i sau.");
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as DebtResult;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dá»¯ liá»‡u AI tráº£ vá» bá»‹ lá»—i Ä‘á»‹nh dáº¡ng (Debt).");
+    }
+  } catch (error: any) {
+    console.error("Debt Error:", error);
+    if (error.message && (error.message.includes("Há»‡ thá»‘ng AI") || error.message.includes("Dá»¯ liá»‡u AI"))) {
+      throw error;
+    }
+    throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i, vui lÃ²ng thá»­ láº¡i sau.");
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\agents\Query.ts ====
+import { supabase } from '../supabase';
+import { RouterResponse } from './types';
+
+// HÃ m láº¥y thá»i gian hiá»‡n táº¡i theo UTC+7
+function nowVN() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
+}
+
+function computeDateRange(period?: string, n: number = 7, explicitDate?: string) {
+  const now = nowVN();
+  let start = new Date(now);
+  let end = new Date(now);
+
+  if (explicitDate) {
+    if (explicitDate === "today") {
+      // Do nothing, uses 'now'
+    } else if (explicitDate === "yesterday") {
+      start.setDate(start.getDate() - 1);
+      end.setDate(end.getDate() - 1);
+    } else {
+      const parts = explicitDate.split('-');
+      if (parts.length === 3) {
+        start = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        end = new Date(start);
+      }
+    }
+  } else {
+    switch (period) {
+      case "this_week": {
+        const dow = now.getDay();
+        const back = dow === 0 ? 6 : dow - 1;
+        start.setDate(start.getDate() - back);
+        end.setDate(start.getDate() + 6);
+        break;
+      }
+      case "last_week": {
+        const dow = now.getDay();
+        const back = dow === 0 ? 6 : dow - 1;
+        end.setDate(end.getDate() - back - 1);
+        start.setDate(end.getDate() - 6);
+        break;
+      }
+      case "this_month":
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case "last_month":
+        start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        end = new Date(now.getFullYear(), now.getMonth(), 0);
+        break;
+      case "this_year":
+        start = new Date(now.getFullYear(), 0, 1);
+        end = new Date(now.getFullYear(), 11, 31);
+        break;
+      case "last_n_days":
+        start.setDate(start.getDate() - (n - 1));
+        break;
+    }
+  }
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+
+function toVNTimestamp(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const s = String(date.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${d} ${h}:${min}:${s}+07`;
+}
+
+function getPeriodTitle(period?: string, explicitDate?: string) {
+  if (explicitDate === "today") return "HÃ´m nay";
+  if (explicitDate === "yesterday") return "HÃ´m qua";
+  if (explicitDate) return `NgÃ y ${explicitDate}`;
+  switch(period) {
+    case "this_week": return "Tuáº§n nÃ y";
+    case "last_week": return "Tuáº§n trÆ°á»›c";
+    case "this_month": return "ThÃ¡ng nÃ y";
+    case "last_month": return "ThÃ¡ng trÆ°á»›c";
+    case "this_year": return "NÄƒm nay";
+    default: return "Ká»³ bÃ¡o cÃ¡o";
+  }
+}
+
+export async function processQuery(params: RouterResponse): Promise<any> {
+  const { query_type, person, date, period, n } = params;
+
+  // Xá»­ lÃ½ ná»£ (Debt Query)
+  if (query_type === 'debt') {
+    if (!person) return { error: "Vui lÃ²ng cung cáº¥p tÃªn ngÆ°á»i cáº§n tra cá»©u cÃ´ng ná»£." };
+    
+    const [aggRes, rawRes] = await Promise.all([
+      supabase
+        .from('transactions')
+        .select('sub_type, so_tien')
+        .eq('ma_bp', person)
+        .in('sub_type', ['Borrow', 'Lend', 'RepayPrincipal', 'CollectPrincipal']),
+        
+      supabase
+        .from('transactions')
+        .select('tx_date, phan_loai, sub_type, so_tien, ghi_chu, ma_bp')
+        .eq('ma_bp', person)
+        .in('sub_type', ['Borrow', 'Lend', 'RepayPrincipal', 'CollectPrincipal'])
+        .order('created_at', { ascending: false })
+        .limit(10)
+    ]);
+
+    if (aggRes.error) return { error: `Lá»—i truy váº¥n dá»¯ liá»‡u: ${aggRes.error.message}` };
+    
+    let duNo = 0;
+    for (const tx of aggRes.data) {
+      if (tx.sub_type === 'Lend' || tx.sub_type === 'RepayPrincipal') duNo += tx.so_tien;
+      if (tx.sub_type === 'Borrow' || tx.sub_type === 'CollectPrincipal') duNo -= tx.so_tien;
+    }
+    
+    let summaryText = "";
+    if (duNo === 0) summaryText = `Hiá»‡n táº¡i sáº¿p vÃ  **${person}** khÃ´ng ná»£ náº§n gÃ¬ nhau (DÆ° ná»£ = 0).`;
+    else if (duNo > 0) summaryText = `Tá»•ng káº¿t: **${person} Ä‘ang ná»£ sáº¿p ${duNo.toLocaleString('vi-VN')} Ä‘**.`;
+    else summaryText = `Tá»•ng káº¿t: **Sáº¿p Ä‘ang ná»£ ${person} ${Math.abs(duNo).toLocaleString('vi-VN')} Ä‘**.`;
+
+    return {
+      type: 'debt',
+      message: summaryText,
+      raw_data: rawRes.data || [],
+      total_count: aggRes.data.length
+    };
+  }
+  
+  // Xá»­ lÃ½ bÃ¡o cÃ¡o (Metric/Daily Query)
+  if (query_type === 'daily' || query_type === 'metric') {
+    const { start, end } = computeDateRange(period, n, date);
+    const title = getPeriodTitle(period, date);
+    const endPlusOne = new Date(end.getTime() + 1);
+
+    const startTs = toVNTimestamp(start);
+    const endTs = toVNTimestamp(endPlusOne);
+
+    // Cháº¡y song song 2 Query CÃ™NG WHERE CLAUSE
+    const [aggRes, rawRes] = await Promise.all([
+      supabase
+        .from('transactions')
+        .select('phan_loai, sub_type, so_tien')
+        .gte('created_at', startTs)
+        .lt('created_at', endTs),
+        
+      supabase
+        .from('transactions')
+        .select('tx_date, phan_loai, lv2, so_tien, ghi_chu, ma_bp')
+        .gte('created_at', startTs)
+        .lt('created_at', endTs)
+        .order('created_at', { ascending: false })
+        .limit(10)
+    ]);
+
+    if (aggRes.error) return { error: `Lá»—i truy váº¥n: ${aggRes.error.message}` };
+
+    let thu = 0, chi = 0, tietKiem = 0, dauTu = 0;
+
+    for (const tx of aggRes.data) {
+      const p = tx.phan_loai;
+      const s = tx.sub_type;
+      const tien = tx.so_tien;
+
+      if (p === "Thu nháº­p" || s === "CollectInterest") thu += tien;
+      else if (p === "Chi phÃ­" || s === "RepayInterest") chi += tien;
+      else if (p === "Tiáº¿t kiá»‡m") tietKiem += tien;
+      else if (p === "Äáº§u tÆ°" || p === "Äáº§u tÆ° (Vá»‘n)") dauTu += tien;
+    }
+
+    return {
+      type: 'metric',
+      title: `BÃ¡o cÃ¡o ${title}`,
+      periodStr: `Tá»« ${start.toLocaleDateString('vi-VN')} Ä‘áº¿n ${end.toLocaleDateString('vi-VN')}`,
+      summary: { thu, chi, tietKiem, dauTu, dongTien: thu - chi },
+      raw_data: rawRes.data || [],
+      total_count: aggRes.data.length
+    };
+  }
+
+  return { error: "KhÃ´ng hiá»ƒu yÃªu cáº§u tra cá»©u." };
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\agents\Router.ts ====
+import { RouterResponse, MessageContext } from './types';
+
+// Danh sÃ¡ch cÃ¡c key Groq (Xoay vÃ²ng Ä‘á»ƒ chá»‘ng rate limit)
+const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2].filter(Boolean) as string[];
+let currentGroqIndex = 0;
+
+function getNextGroqKey() {
+  if (GROQ_KEYS.length === 0) throw new Error('Missing GROQ_KEY');
+  const key = GROQ_KEYS[currentGroqIndex];
+  currentGroqIndex = (currentGroqIndex + 1) % GROQ_KEYS.length;
+  return key;
+}
+
+export async function routeIntent(message: string, contextHistory: MessageContext[] = []): Promise<RouterResponse> {
+  const apiKey = getNextGroqKey();
+  
+  // Format context history
+  const contextText = contextHistory.length > 0 
+    ? `\nLá»‹ch sá»­ trÃ² chuyá»‡n gáº§n Ä‘Ã¢y:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `
+Báº¡n lÃ  Agent_Router trong há»‡ thá»‘ng Quáº£n lÃ½ tÃ i chÃ­nh cÃ¡ nhÃ¢n. Nhiá»‡m vá»¥ duy nháº¥t cá»§a báº¡n lÃ  GÃN NHÃƒN (Label) cho tin nháº¯n má»›i nháº¥t cá»§a ngÆ°á»i dÃ¹ng.
+
+PHÃ‚N LOáº I NHÃƒN (Chá»‰ Ä‘Æ°á»£c chá»n 1 trong 4):
+1. "Standard": Má»i giao dá»‹ch tiá»n tá»‡ (Thu nháº­p, Chi phÃ­, Tiáº¿t kiá»‡m, Äáº§u tÆ°) KHÃ”NG liÃªn quan Ä‘áº¿n Ná»£.
+2. "Debt": CÃ¡c giao dá»‹ch liÃªn quan Ä‘áº¿n CÃ´ng ná»£ (Vay, Cho vay, Tráº£ ná»£ gá»‘c, Thu ná»£ gá»‘c, Tráº£ lÃ£i, Thu lÃ£i).
+3. "Query": CÃ¡c cÃ¢u há»i tra cá»©u (tá»•ng chi, sá»‘ dÆ° ná»£, bÃ¡o cÃ¡o ngÃ y).
+4. "Unclear": CÃ¡c cÃ¢u nÃ³i mÆ¡ há»“, khÃ´ng rÃµ lÃ  vay hay chi tiÃªu, hoáº·c khÃ´ng Ä‘á»§ thÃ´ng tin Ä‘á»ƒ Ä‘oÃ¡n. KHÃ”NG ÄÆ¯á»¢C ÄOÃN Bá»ªA.
+
+HÆ¯á»šNG DáºªN Äá»I Vá»šI LABEL "Debt":
+Báº¡n pháº£i tráº£ kÃ¨m "sub_type" lÃ  má»™t trong 6 giÃ¡ trá»‹: Borrow (mÃ¬nh Ä‘i vay), Lend (mÃ¬nh cho vay), RepayPrincipal (mÃ¬nh tráº£ ná»£ gá»‘c), CollectPrincipal (ngÆ°á»i ta tráº£ ná»£ gá»‘c cho mÃ¬nh), RepayInterest (mÃ¬nh tráº£ tiá»n lÃ£i), CollectInterest (mÃ¬nh thu tiá»n lÃ£i).
+LÆ°u Ã½: "Ná»£ [TÃªn]" hoáº·c "MÆ°á»£n [TÃªn]" -> Borrow. "Cho [TÃªn] ná»£" hoáº·c "Cho vay" -> Lend.
+
+HÆ¯á»šNG DáºªN Äá»I Vá»šI LABEL "Query":
+Báº¡n pháº£i bÃ³c tÃ¡ch tham sá»‘ truy váº¥n:
+- Náº¿u há»i ná»£: "query_type": "debt", "person": "TÃªn ngÆ°á»i".
+- Náº¿u há»i ngÃ y cá»¥ thá»ƒ: "query_type": "daily", "date": "today" | "yesterday" | "YYYY-MM-DD"
+- Náº¿u há»i khoáº£ng thá»i gian: "query_type": "metric", "period": "this_week" | "this_month" | "last_month"
+
+HÆ¯á»šNG DáºªN Äá»I Vá»šI LABEL "Unclear":
+Báº¡n pháº£i tráº£ kÃ¨m "message" lÃ  má»™t cÃ¢u há»i ngáº¯n gá»n gá»n Ä‘á»ƒ há»i láº¡i ngÆ°á»i dÃ¹ng cho rÃµ rÃ ng. 
+CHÃš Ã QUAN TRá»ŒNG: HÃ£y Ä‘á»c ká»¹ "Lá»‹ch sá»­ trÃ² chuyá»‡n gáº§n Ä‘Ã¢y" (náº¿u cÃ³). Náº¿u Bot vá»«a há»i láº¡i vÃ  User vá»«a tráº£ lá»i bá»• sung thÃ´ng tin (vÃ­ dá»¥ Bot há»i: "TiÃªu dÃ¹ng hay tráº£ ná»£?", User Ä‘Ã¡p: "TiÃªu dÃ¹ng"), thÃ¬ báº¡n báº¯t buá»™c káº¿t há»£p lá»‹ch sá»­ vÃ  cÃ¢u má»›i Ä‘á»ƒ chá»‘t NhÃ£n luÃ´n (Standard hoáº·c Debt). TUYá»†T Äá»I KHÃ”NG ÄÆ¯á»¢C tráº£ Unclear láº§n 2 gÃ¢y láº·p vÃ´ táº­n.
+
+VÃ Dá»¤:
+- User: "Ä‚n phá»Ÿ 50k" -> {"intent": "Standard"}
+- User: "LÆ°Æ¡ng thÃ¡ng 6: 15 triá»‡u" -> {"intent": "Standard"}
+- User: "Gá»­i tiáº¿t kiá»‡m 10 triá»‡u" -> {"intent": "Standard"}
+- User: "Vay TÃ¹ng 2 cá»§" -> {"intent": "Debt", "sub_type": "Borrow"}
+- User: "Cho Sacombank vay 5 triá»‡u" -> {"intent": "Debt", "sub_type": "Lend"}
+- User: "Tráº£ BÃ¬nh 500k" -> {"intent": "Debt", "sub_type": "RepayPrincipal"}
+- User: "Nam Ä‘Æ°a tao 3 triá»‡u" -> {"intent": "Debt", "sub_type": "CollectPrincipal"}
+- User: "Tráº£ lÃ£i cho TÃ¹ng 200k" -> {"intent": "Debt", "sub_type": "RepayInterest"}
+- User: "Chuyá»ƒn 500k" -> {"intent": "Unclear", "message": "Sáº¿p chuyá»ƒn 500k nÃ y cho viá»‡c gÃ¬ áº¡? TiÃªu dÃ¹ng hay tráº£ ná»£?"}
+- User: "Ná»£ TÃ¹ng bao nhiÃªu" -> {"intent": "Query", "query_type": "debt", "person": "TÃ¹ng"}
+- User: "Tá»•ng chi thÃ¡ng nÃ y" -> {"intent": "Query", "query_type": "metric", "period": "this_month"}
+
+Äáº¦U VÃ€O Má»šI NHáº¤T Tá»ª USER: "${message}"${contextText}
+
+TRáº¢ Vá»€ DUY NHáº¤T 1 CHUá»–I JSON ÄÃšNG Äá»ŠNH Dáº NG. KHÃ”NG GIáº¢I THÃCH GÃŒ THÃŠM.`;
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i (Groq), vui lÃ²ng thá»­ láº¡i sau.");
+    }
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as RouterResponse;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dá»¯ liá»‡u AI tráº£ vá» bá»‹ lá»—i Ä‘á»‹nh dáº¡ng (Router).");
+    }
+  } catch (error: any) {
+    console.error("Router Error:", error);
+    if (error.message && (error.message.includes("Há»‡ thá»‘ng AI") || error.message.includes("Dá»¯ liá»‡u AI"))) {
+      throw error;
+    }
+    throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i, vui lÃ²ng thá»­ láº¡i sau.");
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\agents\Standard.ts ====
+import { StandardResult, MessageContext } from './types';
+
+const DEEPSEEK_KEYS = [process.env.DEEPSEEK_KEY_1, process.env.DEEPSEEK_KEY_2].filter(Boolean) as string[];
+let currentDeepseekIndex = 0;
+
+function getNextDeepseekKey() {
+  if (DEEPSEEK_KEYS.length === 0) throw new Error('Missing DEEPSEEK_KEY');
+  const key = DEEPSEEK_KEYS[currentDeepseekIndex];
+  currentDeepseekIndex = (currentDeepseekIndex + 1) % DEEPSEEK_KEYS.length;
+  return key;
+}
+
+export async function processStandard(message: string, contextHistory: MessageContext[] = []): Promise<StandardResult> {
+  const apiKey = getNextDeepseekKey();
+  
+  const contextText = contextHistory.length > 0 
+    ? `\nLá»‹ch sá»­ trÃ² chuyá»‡n gáº§n Ä‘Ã¢y:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `Báº¡n lÃ  Agent_Standard chuyÃªn bÃ³c tÃ¡ch giao dá»‹ch tÃ i chÃ­nh chung (Thu nháº­p, Chi phÃ­, Tiáº¿t kiá»‡m, Äáº§u tÆ°).
+GIAO Dá»ŠCH NÃ€Y KHÃ”NG PHáº¢I LÃ€ CÃ”NG Ná»¢ (VAY/TRáº¢).
+
+Báº¢NG QUY Äá»”I Sá» TIá»€N (Slang):
+- k, nghÃ¬n, ngÃ n, cÃ nh, ca -> x 1.000 (VÃ­ dá»¥: 5 ca = 5000)
+- xá»‹, lÃ­t -> x 100.000 (VÃ­ dá»¥: 3 xá»‹ = 300000)
+- tr, triá»‡u, chai, cá»§, cu -> x 1.000.000 (VÃ­ dá»¥: 2 cá»§ = 2000000)
+- chá»¥c (Ä‘á»©ng má»™t mÃ¬nh) -> x 10.000 (VÃ­ dá»¥: 5 chá»¥c = 50000)
+- chá»¥c cá»§/triá»‡u -> x 10.000.000 (VÃ­ dá»¥: 2 chá»¥c cá»§ = 20000000)
+
+QUY Táº®C BÃ“C TÃCH:
+- phan_loai: Chá»‰ Ä‘Æ°á»£c chá»n 1 trong: "Chi phÃ­", "Thu nháº­p", "Äáº§u tÆ° (Vá»‘n)", "Äáº§u tÆ° (Thá»‹ giÃ¡)", "Tiáº¿t kiá»‡m".
+  * LÆ¯U Ã Äáº¦U TÆ¯: Náº¿u lÃ  tiá»n vá»‘n bá» ra -> phan_loai="Äáº§u tÆ° (Vá»‘n)". Náº¿u lÃ  bÃ¡o giÃ¡ trá»‹ thá»‹ trÆ°á»ng -> phan_loai="Äáº§u tÆ° (Thá»‹ giÃ¡)". Cáº£ 2 trÆ°á»ng há»£p nÃ y báº¯t buá»™c lv1="Äáº§u tÆ°".
+- lv1, lv2: Tá»± phÃ¢n loáº¡i theo logic káº¿ toÃ¡n thÃ´ng thÆ°á»ng. Má»i giao dá»‹ch pháº£i map vÃ o cÃ¢y danh má»¥c chuáº©n.
+- so_tien: Báº¯t buá»™c lÃ  Sá» NGUYÃŠN (Integer). 
+  * LÆ°u Ã½ Ä‘áº·c biá»‡t: Náº¿u lÃ  "RÃºt tiáº¿t kiá»‡m", sá»‘ tiá»n pháº£i lÃ  Sá» Ã‚M (vÃ­ dá»¥: -5000000). CÃ¡c trÆ°á»ng há»£p khÃ¡c Ä‘á»ƒ sá»‘ dÆ°Æ¡ng.
+- ghi_chu: Giá»¯ nguyÃªn vÄƒn hoáº·c tÃ³m táº¯t ngáº¯n gá»n.
+- ngay: Tráº£ vá» YYYY-MM-DD. Náº¿u khÃ´ng nháº¯c thá»i gian thÃ¬ dÃ¹ng ngÃ y hÃ´m nay. (HÃ´m nay lÃ : ${new Date().toISOString().split('T')[0]})
+- Náº¿u khÃ´ng cháº¯c cháº¯n vá» danh má»¥c, set "danh_muc_confidence": "thap" vÃ  liá»‡t kÃª "alternatives": ["Gá»£i Ã½ 1", "Gá»£i Ã½ 2"].
+
+Äáº¦U VÃ€O Tá»ª USER: "${message}"${contextText}
+
+TRáº¢ Vá»€ DUY NHáº¤T 1 CHUá»–I JSON THEO Cáº¤U TRÃšC:
+{
+  "phan_loai": "Chi phÃ­",
+  "lv1": "Ä‚n uá»‘ng",
+  "lv2": "Ä‚n sÃ¡ng",
+  "so_tien": 50000,
+  "ghi_chu": "Ä‚n phá»Ÿ",
+  "ngay": "2026-06-05",
+  "danh_muc_confidence": "cao"
+}`;
+
+  try {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i (DeepSeek), vui lÃ²ng thá»­ láº¡i sau.");
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as StandardResult;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dá»¯ liá»‡u AI tráº£ vá» bá»‹ lá»—i Ä‘á»‹nh dáº¡ng (Standard).");
+    }
+  } catch (error: any) {
+    console.error("Standard Error:", error);
+    if (error.message && (error.message.includes("Há»‡ thá»‘ng AI") || error.message.includes("Dá»¯ liá»‡u AI"))) {
+      throw error;
+    }
+    throw new Error("Há»‡ thá»‘ng AI Ä‘ang quÃ¡ táº£i, vui lÃ²ng thá»­ láº¡i sau.");
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\agents\types.ts ====
+export type IntentLabel = 'Standard' | 'Debt' | 'Query' | 'Unclear' | 'Valuation';
+
+export type DebtSubType = 
+  | 'Borrow' 
+  | 'Lend' 
+  | 'RepayPrincipal' 
+  | 'CollectPrincipal' 
+  | 'RepayInterest' 
+  | 'CollectInterest';
+
+export interface RouterResponse {
+  intent: IntentLabel;
+  sub_type?: DebtSubType; // Only for Debt
+  query_type?: 'debt' | 'daily' | 'metric'; // Only for Query
+  person?: string; // Only for Query type debt
+  date?: string; // Only for Query type daily
+  period?: 'this_week' | 'this_month' | 'last_month' | 'last_n_days'; // Only for Query type metric
+  n?: number; // Only for Query type metric when last_n_days
+  message?: string; // Only for Unclear
+}
+
+export interface StandardResult {
+  phan_loai: string;
+  lv1: string;
+  lv2: string;
+  so_tien: number;
+  ghi_chu: string;
+  ngay: string;
+  danh_muc_confidence?: 'cao' | 'thap';
+  alternatives?: string[];
+}
+
+export interface DebtResult {
+  sub_type: DebtSubType;
+  ma_bp: string;
+  so_tien: number;
+  ghi_chu: string;
+  ngay: string;
+  error?: 'MissingPartner' | 'MissingAmount';
+}
+
+export interface MessageContext {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\crawlers\fred.ts ====
+import { z } from "zod";
+
+const FredResponseSchema = z.object({
+  observations: z
+    .array(
+      z.object({
+        date: z.string(),
+        value: z.string(),
+      })
+    )
+    .min(1),
+});
+
+export type FredData = {
+  indicator_key: string;
+  indicator_value: number;
+  source: string;
+  is_stale: boolean;
+  recorded_at: Date;
+};
+
+// HÃ m há»— trá»£ kiá»ƒm tra Data Freshness (quÃ¡ 24h lÃ  stale)
+function isDataStale(dateString: string): boolean {
+  const recordDate = new Date(dateString);
+  const now = new Date();
+  const diffInHours = (now.getTime() - recordDate.getTime()) / (1000 * 60 * 60);
+  
+  // FRED thÆ°á»ng cÃ³ Ä‘á»™ trá»… cÃ´ng bá»‘ dá»¯ liá»‡u (vÃ­ dá»¥: M2 cáº­p nháº­t theo thÃ¡ng).
+  // Tuy nhiÃªn, Ä‘á»‘i vá»›i yÃªu cáº§u MECE, ta strict check xem data cÃ³ Ä‘Æ°á»£c kÃ©o má»›i nháº¥t khÃ´ng.
+  // Thá»±c táº¿, FRED API date lÃ  ngÃ y cá»§a dá»¯ liá»‡u, KHÃ”NG PHáº¢I ngÃ y kÃ©o. 
+  // Äá»ƒ chÃ­nh xÃ¡c, ta so sÃ¡nh ngÃ y láº¥y dá»¯ liá»‡u vá»›i "bÃ¢y giá»". 
+  // Trong trÆ°á»ng há»£p nÃ y, "is_stale" Ã¡m chá»‰ dá»¯ liá»‡u kÃ©o vá» Ä‘Ã£ quÃ¡ cÅ© so vá»›i thá»i Ä‘iá»ƒm hiá»‡n hÃ nh.
+  // á»ž Ä‘Ã¢y cáº¥u hÃ¬nh táº¡m thá»i lÃ  > 720h (1 thÃ¡ng) cho M2, cÃ²n daily indicator thÃ¬ > 48h.
+  return diffInHours > 720; 
+}
+
+export async function fetchFredIndicator(seriesId: string, units: string = "lin"): Promise<FredData | null> {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) {
+    console.error("Missing FRED_API_KEY in environment variables.");
+    return null;
+  }
+
+  const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${apiKey}&file_type=json&limit=1&sort_order=desc&units=${units}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      next: { revalidate: 0 }, // KhÃ´ng cache, luÃ´n fetch má»›i khi gá»i
+    });
+
+    if (!response.ok) {
+      throw new Error(`FRED API Error: ${response.status} ${response.statusText}`);
+    }
+
+    const rawData = await response.json();
+    
+    // Gate 2: Schema Validation (Zod)
+    const parsedData = FredResponseSchema.safeParse(rawData);
+    
+    if (!parsedData.success) {
+      console.error(`Invalid schema returned for ${seriesId}:`, parsedData.error);
+      return null;
+    }
+
+    const latestObservation = parsedData.data.observations[0];
+    
+    // Gate 3: No Hallucination - náº¿u value lÃ  '.' (FRED tráº£ '.' cho dá»¯ liá»‡u missing)
+    if (latestObservation.value === ".") {
+      console.warn(`FRED returned '.' (missing data) for ${seriesId}`);
+      return null;
+    }
+
+    const numericValue = parseFloat(latestObservation.value);
+    
+    if (isNaN(numericValue)) {
+      console.error(`Parsed value is NaN for ${seriesId}: ${latestObservation.value}`);
+      return null;
+    }
+
+    // XÃ¡c Ä‘á»‹nh stale rule tÃ¹y vÃ o indicator. (T10Y2Y lÃ  daily, M2SL lÃ  monthly)
+    let staleCheck = false;
+    const now = new Date();
+    const obsDate = new Date(latestObservation.date);
+    const diffHours = (now.getTime() - obsDate.getTime()) / (1000 * 60 * 60);
+
+    if (seriesId === "T10Y2Y") {
+      staleCheck = diffHours > 72; // Cuá»‘i tuáº§n khÃ´ng cÃ³ giao dá»‹ch, nÃªn Ä‘á»ƒ 72h thay vÃ¬ 24h
+    } else if (seriesId === "M2SL") {
+      staleCheck = diffHours > 1000; // M2 cÃ´ng bá»‘ trá»… khoáº£ng 1 thÃ¡ng
+    } else if (seriesId === "SAHMREALTIME") {
+      staleCheck = diffHours > 1000; // Sahm rule cÃ´ng bá»‘ theo thÃ¡ng
+    }
+
+    return {
+      indicator_key: seriesId,
+      indicator_value: numericValue,
+      source: "FRED",
+      is_stale: staleCheck,
+      recorded_at: new Date(), // Thá»i Ä‘iá»ƒm CRAWL
+    };
+
+  } catch (error) {
+    console.error(`Failed to fetch ${seriesId} from FRED:`, error);
+    return null;
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\news\gemini_extractor.ts ====
+import { GoogleGenerativeAI, SchemaType, Schema } from '@google/generative-ai';
+import { z } from 'zod';
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY_1 || '');
+
+// Schema chuáº©n cá»§a Zod dÃ¹ng Ä‘á»ƒ parse cuá»‘i cÃ¹ng (Chá»‘ng hallucination tuyá»‡t Ä‘á»‘i)
+export const NewsAnalysisZodSchema = z.object({
+  sentiment: z.enum(['positive', 'negative', 'neutral']),
+  impacted_entities: z.array(z.string()),
+  summary: z.string(),
+});
+
+export type NewsAnalysisResult = z.infer<typeof NewsAnalysisZodSchema>;
+
+// Äá»‹nh nghÄ©a Schema báº±ng chuáº©n Type cá»§a Google GenAI Ä‘á»ƒ Ã©p mÃ´ hÃ¬nh tráº£ vá» Ä‘Ãºng cáº¥u trÃºc
+const responseSchema: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    sentiment: {
+      type: SchemaType.STRING,
+      description: "ÄÃ¡nh giÃ¡ má»©c Ä‘á»™ tÃ­ch cá»±c hay tiÃªu cá»±c cá»§a tin tá»©c Ä‘á»‘i vá»›i ná»n kinh táº¿ hoáº·c thá»‹ trÆ°á»ng. Pháº£i lÃ  má»™t trong: positive, negative, neutral.",
+    },
+    impacted_entities: {
+      type: SchemaType.ARRAY,
+      items: { type: SchemaType.STRING },
+      description: "Danh sÃ¡ch cÃ¡c ngÃ nh, lÄ©nh vá»±c hoáº·c tá»• chá»©c bá»‹ áº£nh hÆ°á»Ÿng chÃ­nh (VD: NgÃ¢n hÃ ng, Báº¥t Ä‘á»™ng sáº£n, Xuáº¥t kháº©u, Fed, SBV).",
+    },
+    summary: {
+      type: SchemaType.STRING,
+      description: "TÃ³m táº¯t cá»‘t lÃµi cá»§a bÃ i bÃ¡o trong Ä‘Ãºng 1 cÃ¢u duy nháº¥t mang tÃ­nh hÃ nh Ä‘á»™ng hoáº·c phÃ¢n tÃ­ch.",
+    },
+  },
+  required: ["sentiment", "impacted_entities", "summary"],
+};
+
+export async function extractNewsLogicWithGemini(title: string, rawContent: string): Promise<NewsAnalysisResult | null> {
+  if (!process.env.GEMINI_KEY_1) {
+    console.warn("Missing GEMINI_KEY_1");
+    return null;
+  }
+
+  const prompt = `
+Báº¡n lÃ  má»™t chuyÃªn gia phÃ¢n tÃ­ch vÄ© mÃ´ (Macro Analyst). HÃ£y Ä‘á»c tiÃªu Ä‘á» vÃ  ná»™i dung bÃ i bÃ¡o tÃ i chÃ­nh sau Ä‘Ã¢y.
+Nhiá»‡m vá»¥ cá»§a báº¡n lÃ  bÃ³c tÃ¡ch thÃ´ng tin vÃ  phÃ¢n loáº¡i Sentiment.
+
+TiÃªu Ä‘á»: ${title}
+Ná»™i dung: ${rawContent}
+
+Chá»‰ tráº£ vá» JSON theo Ä‘Ãºng schema Ä‘Æ°á»£c yÃªu cáº§u. KhÃ´ng thÃªm vÄƒn báº£n nÃ o khÃ¡c ngoÃ i JSON.
+`;
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-1.5-flash',
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: responseSchema,
+        temperature: 0.1,
+      }
+    });
+
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text();
+
+    if (!responseText) {
+      throw new Error("Empty response from Gemini");
+    }
+
+    const rawJson = JSON.parse(responseText);
+    
+    // Gate an toÃ n cuá»‘i cÃ¹ng: Pass qua Zod Ä‘á»ƒ Ä‘áº£m báº£o kiá»ƒu dá»¯ liá»‡u chuáº©n 100%
+    const validatedData = NewsAnalysisZodSchema.safeParse(rawJson);
+    
+    if (!validatedData.success) {
+      console.error("Gemini tráº£ vá» sai cáº¥u trÃºc Zod:", validatedData.error);
+      return null;
+    }
+
+    return validatedData.data;
+  } catch (error) {
+    console.error("Lá»—i khi cháº¡y Gemini Extractor:", error);
+    return null;
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\news\scraper.ts ====
+import * as cheerio from 'cheerio';
+
+export type RawNewsItem = {
+  title: string;
+  url: string;
+  source: string;
+  published_at: Date;
+  raw_content: string;
+};
+
+// HÃ m cÃ o RSS tá»« VnEconomy (ChuyÃªn má»¥c TÃ i chÃ­nh)
+export async function scrapeVnEconomyRSS(): Promise<RawNewsItem[]> {
+  try {
+    const rssUrl = "https://vneconomy.vn/tai-chinh.rss";
+    const response = await fetch(rssUrl, { next: { revalidate: 3600 } });
+    
+    if (!response.ok) throw new Error("Failed to fetch VnEconomy RSS");
+    
+    const xmlData = await response.text();
+    const $ = cheerio.load(xmlData, { xmlMode: true });
+    
+    const newsItems: RawNewsItem[] = [];
+    
+    // Láº¥y 5 bÃ i bÃ¡o má»›i nháº¥t
+    $('item').slice(0, 5).each((_, element) => {
+      const title = $(element).find('title').text();
+      const url = $(element).find('link').text();
+      const pubDateStr = $(element).find('pubDate').text();
+      const description = $(element).find('description').text();
+      
+      newsItems.push({
+        title: title.trim(),
+        url: url.trim(),
+        source: 'VnEconomy',
+        published_at: new Date(pubDateStr),
+        raw_content: description.replace(/(<([^>]+)>)/gi, "").trim() // Bá» HTML tags
+      });
+    });
+    
+    return newsItems;
+  } catch (error) {
+    console.error("Scrape VnEconomy Error:", error);
+    return [];
+  }
+}
+
+// HÃ m cÃ o RSS tá»« CafeF (ChuyÃªn má»¥c TÃ i chÃ­nh - NgÃ¢n hÃ ng)
+export async function scrapeCafeFRSS(): Promise<RawNewsItem[]> {
+  try {
+    const rssUrl = "https://cafef.vn/tai-chinh-ngan-hang.rss";
+    const response = await fetch(rssUrl, { next: { revalidate: 3600 } });
+    
+    if (!response.ok) throw new Error("Failed to fetch CafeF RSS");
+    
+    const xmlData = await response.text();
+    const $ = cheerio.load(xmlData, { xmlMode: true });
+    
+    const newsItems: RawNewsItem[] = [];
+    
+    $('item').slice(0, 5).each((_, element) => {
+      const title = $(element).find('title').text();
+      const url = $(element).find('link').text();
+      const pubDateStr = $(element).find('pubDate').text();
+      const description = $(element).find('description').text();
+      
+      newsItems.push({
+        title: title.trim(),
+        url: url.trim(),
+        source: 'CafeF',
+        published_at: new Date(pubDateStr),
+        raw_content: description.replace(/(<([^>]+)>)/gi, "").trim()
+      });
+    });
+    
+    return newsItems;
+  } catch (error) {
+    console.error("Scrape CafeF Error:", error);
+    return [];
+  }
+}
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\lib\supabase.ts ====
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+==== File: C:\Users\TDI\Documents\antigravity\valiant-raman\next-pwa-app\src\middleware.ts ====
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  // Chá»‰ báº£o vá»‡ cÃ¡c Ä‘Æ°á»ng dáº«n báº¯t Ä‘áº§u báº±ng /api/chat
+  if (request.nextUrl.pathname.startsWith('/api/chat')) {
+    const authCookie = request.cookies.get('auth_token')?.value;
+    const authHeader = request.headers.get('Authorization')?.replace('Bearer ', '');
+    
+    const token = authCookie || authHeader;
+
+    // So sÃ¡nh token vá»›i PASSPHRASE_HASH lÆ°u trong mÃ´i trÆ°á»ng
+    const validHash = process.env.PASSPHRASE_HASH;
+    
+    if (!validHash) {
+      console.warn("ChÆ°a cáº¥u hÃ¬nh PASSPHRASE_HASH trÃªn Server!");
+      return NextResponse.next(); // Bypass táº¡m thá»i náº¿u chÆ°a cÃ i biáº¿n mÃ´i trÆ°á»ng
+    }
+
+    if (!token || token !== validHash) {
+      return new NextResponse(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { 'content-type': 'application/json' } }
+      );
+    }
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: '/api/:path*',
+};
+
