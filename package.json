@@ -17,8 +17,8 @@
     "clsx": "^2.1.1",
     "tailwind-merge": "^2.3.0",
     "zod": "^3.23.8",
-    "cheerio": "^1.0.0-rc.12",
-    "@google/genai": "^0.1.2"
+    "cheerio": "latest",
+    "@google/generative-ai": "latest"
   },
   "devDependencies": {
     "typescript": "^5.4.5",
