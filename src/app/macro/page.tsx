@@ -22,7 +22,7 @@ export default async function MacroDashboard() {
   // Lọc ra các chỉ số mới nhất (distinct)
   const latestData = new Map();
   if (indicators) {
-    indicators.forEach(ind => {
+    indicators.forEach((ind: any) => {
       if (!latestData.has(ind.indicator_key)) {
         latestData.set(ind.indicator_key, ind);
       }

@@ -35,7 +35,7 @@ export async function GET(request: Request) {
   const cafefNews = await scrapeCafeFRSS();
   const allNews = [...vneNews, ...cafefNews];
   
-  const processedNews = [];
+  const processedNews: any[] = [];
 
   // 2. Chạy Gemini bóc tách từng tin
   for (const item of allNews) {
