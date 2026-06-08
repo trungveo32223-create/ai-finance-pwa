@@ -3,8 +3,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { runDebate, DebateContext } from "@/lib/agents/debate_engine/orchestrator";
 import { evaluateFlow, UserProfile, PanicSignal } from "@/lib/agents/slot_filling";
 
-export const runtime = "nodejs";
-export const maxDuration = 60;
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 type ChatIntent = "standard_debt" | "macro_advice" | "unknown";
