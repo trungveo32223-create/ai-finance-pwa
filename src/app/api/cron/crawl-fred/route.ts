@@ -54,7 +54,7 @@ export async function GET(request: Request) {
     "GDPC1":       { units: "pc1" },
   };
   
-  const results = [];
+  const results: any[] = [];
 
   // 4. Kéo dữ liệu và lưu vào Database
   for (const [seriesId, config] of Object.entries(SERIES_CONFIG)) {
