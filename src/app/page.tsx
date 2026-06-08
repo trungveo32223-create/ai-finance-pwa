@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Wallet, Lock, XCircle, CheckCircle, Undo2 } from 'lucide-react';
+import { Send, Loader2, Wallet, Lock, XCircle, CheckCircle, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -10,6 +10,8 @@ interface Message {
   confirmData?: any;
   confirmType?: 'Standard' | 'Debt';
   isUnclear?: boolean;
+  isReport?: boolean;
+  reportData?: any;
 }
 
 // Simple SHA-256 hash
@@ -19,6 +21,185 @@ async function sha256(message: string) {
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   return hashHex;
+}
+
+function ReportCard({ data }: { data: any }) {
+  const [showTable, setShowTable] = useState(false);
+
+  if (data.type === 'debt') {
+    return (
+      <div className="mt-2 w-full">
+        <p className="whitespace-pre-wrap mb-2">{data.message}</p>
+        {data.total_count > 0 && (
+          <div className="mt-3">
+            <button 
+              onClick={() => setShowTable(!showTable)}
+              className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors"
+            >
+              {showTable ? <><ChevronUp size={16} className="mr-1"/> ⬆️ Thu gọn</> : <><ChevronDown size={16} className="mr-1"/> 📋 Xem chi tiết ({data.total_count} GD)</>}
+            </button>
+            
+            {showTable && (
+              <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Metric
+  const dongTienStr = data.summary.dongTien > 0 ? `+${data.summary.dongTien.toLocaleString('vi-VN')}` : data.summary.dongTien.toLocaleString('vi-VN');
+  
+  return (
+    <div className="mt-2 w-full bg-neutral-900 rounded-xl border border-neutral-700 p-4">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xl">📊</span>
+        <h3 className="font-bold text-white">{data.title}</h3>
+      </div>
+      <p className="text-xs text-neutral-400 mb-4">{data.periodStr}</p>
+      
+      <div className="space-y-2 text-sm mb-4">
+        <div className="flex justify-between"><span className="text-neutral-400">💰 Tổng thu:</span> <span className="font-semibold text-emerald-400">{data.summary.thu.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">💸 Tổng chi:</span> <span className="font-semibold text-red-400">{data.summary.chi.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">🏦 Tiết kiệm:</span> <span>{data.summary.tietKiem.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">📈 Đầu tư:</span> <span>{data.summary.dauTu.toLocaleString('vi-VN')} đ</span></div>
+      </div>
+      
+      <div className="border-t border-neutral-700 pt-3 pb-1 mb-2">
+        <div className="flex justify-between items-center">
+          <span className="font-bold text-sm text-neutral-300">DÒNG TIỀN THUẦN:</span>
+          <span className={`font-bold ${data.summary.dongTien >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {dongTienStr} đ
+          </span>
+        </div>
+      </div>
+
+      {data.total_count > 0 && (
+        <div className="mt-4 pt-3 border-t border-neutral-800">
+          <button 
+            onClick={() => setShowTable(!showTable)}
+            className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors w-full justify-center"
+          >
+            {showTable ? <><ChevronUp size={16} className="mr-1"/> ⬆️ Thu gọn</> : <><ChevronDown size={16} className="mr-1"/> 📋 Xem chi tiết ({data.total_count} GD)</>}
+          </button>
+          
+          {showTable && (
+            <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactCheckTable({ rawData, totalCount }: { rawData: any[], totalCount: number }) {
+  return (
+    <div className="mt-3 w-full animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="max-h-[320px] overflow-y-auto overflow-x-auto border border-neutral-700 rounded-lg custom-scrollbar bg-neutral-900/50">
+        <table className="w-full min-w-[380px] text-[13px] border-collapse text-left">
+          <thead className="sticky top-0 bg-neutral-800 z-10 shadow-sm">
+            <tr>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Ngày</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Loại</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-right text-neutral-300">Tiền</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rawData.map((row, idx) => {
+              // Parse date to dd/mm
+              const dateStr = row.tx_date ? row.tx_date.split('-').slice(1).reverse().join('/') : '--/--';
+              // Loại (Lv2 or SubType)
+              let typeStr = row.lv2 || row.sub_type || row.phan_loai;
+              if (row.ma_bp) typeStr = row.ma_bp.replace('MỚI - ', '');
+              
+              const isPositive = row.phan_loai === 'Thu nhập' || row.sub_type === 'CollectInterest';
+              const isNegative = row.phan_loai === 'Chi phí' || row.sub_type === 'RepayInterest';
+              const colorClass = isPositive ? 'text-emerald-400' : (isNegative ? 'text-red-400' : 'text-neutral-300');
+
+              return (
+                <tr key={idx} className="hover:bg-neutral-800/50 transition-colors">
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap text-neutral-400">{dateStr}</td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap truncate max-w-[80px]" title={typeStr}>{typeStr}</td>
+                  <td className={`p-2 border-b border-neutral-800 whitespace-nowrap text-right font-medium ${colorClass}`}>
+                    {row.so_tien.toLocaleString('vi-VN')} đ
+                  </td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-normal max-w-[120px]">
+                    <div className="truncate" title={row.ghi_chu}>{row.ghi_chu}</div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {totalCount > 10 && (
+        <p className="text-[11px] text-center text-neutral-500 mt-2 italic">
+          Hiển thị 10/{totalCount} giao dịch mới nhất
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ConfirmCard({ msg, msgIndex, handleConfirm, handleCancel }: { msg: any, msgIndex: number, handleConfirm: any, handleCancel: any }) {
+  const [partnerMode, setPartnerMode] = useState<'text' | 'input'>('text');
+  const [partnerName, setPartnerName] = useState(msg.confirmData?.ma_bp || '');
+
+  const onConfirm = () => {
+    const updatedData = { ...msg.confirmData };
+    if (msg.confirmType === 'Debt') {
+      updatedData.ma_bp = partnerName;
+    }
+    handleConfirm(msgIndex, updatedData, msg.confirmType);
+  };
+
+  return (
+    <div className="mt-3 p-3 bg-neutral-900 rounded-xl border border-neutral-700 text-sm">
+      {msg.confirmType === 'Standard' ? (
+        <>
+          <p><span className="text-neutral-400">Loại:</span> {msg.confirmData.phan_loai}</p>
+          <p><span className="text-neutral-400">Danh mục:</span> {msg.confirmData.lv1} {'>'} {msg.confirmData.lv2}</p>
+        </>
+      ) : (
+        <>
+          <p><span className="text-neutral-400">Loại nợ:</span> {msg.confirmData.sub_type}</p>
+          <div className="flex items-center gap-2 mt-1 mb-1">
+            <span className="text-neutral-400">Đối tác:</span>
+            {partnerMode === 'text' ? (
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{partnerName}</span>
+                <button onClick={() => setPartnerMode('input')} className="text-xs text-emerald-400 hover:text-emerald-300">
+                  ✏️ Sửa
+                </button>
+              </div>
+            ) : (
+              <input 
+                autoFocus
+                type="text" 
+                value={partnerName} 
+                onChange={e => setPartnerName(e.target.value)} 
+                className="bg-neutral-800 border border-neutral-600 rounded px-2 py-1 text-white text-xs outline-none focus:border-emerald-500 flex-1"
+                placeholder="Nhập đối tác mới..."
+              />
+            )}
+          </div>
+        </>
+      )}
+      <p><span className="text-neutral-400">Số tiền:</span> <span className="font-bold text-emerald-400">{msg.confirmData.so_tien.toLocaleString()}đ</span></p>
+      <p><span className="text-neutral-400">Ghi chú:</span> {msg.confirmData.ghi_chu}</p>
+      
+      <div className="flex gap-2 mt-4">
+        <button onClick={onConfirm} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <CheckCircle size={16} /> Thực Hiện
+        </button>
+        <button onClick={() => handleCancel(msgIndex)} className="flex-1 bg-red-600/80 hover:bg-red-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <XCircle size={16} /> Hủy
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default function ChatPage() {
@@ -34,7 +215,6 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Check if auth_token cookie exists (simple check, real verification is on server)
     if (document.cookie.includes('auth_token=')) {
       setIsAuthenticated(true);
     }
@@ -78,7 +258,6 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      // Nếu là Undo text
       if (userMessage.toLowerCase().includes('xóa cái vừa rồi') || userMessage.toLowerCase() === 'undo') {
         const res = await fetch('/api/transactions', { method: 'DELETE' });
         const data = await res.json();
@@ -87,7 +266,6 @@ export default function ChatPage() {
         return;
       }
 
-      // Xây dựng context_history (Lấy 5 tin nhắn gần nhất)
       const history = newMessages.slice(-5).map(m => ({ role: m.role, content: m.content }));
 
       const res = await fetch('/api/chat', {
@@ -104,7 +282,7 @@ export default function ChatPage() {
 
       const data = await res.json();
 
-      if (data.action === 'UNCLEAR' || data.action === 'QUERY' || data.action === 'MESSAGE') {
+      if (data.action === 'UNCLEAR' || data.action === 'MESSAGE') {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
       } else if (data.action === 'CONFIRM_REQUIRED') {
         setMessages(prev => [...prev, { 
@@ -113,6 +291,13 @@ export default function ChatPage() {
           isConfirmCard: true,
           confirmData: data.data,
           confirmType: data.type
+        }]);
+      } else if (data.action === 'REPORT') {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: '',
+          isReport: true,
+          reportData: data.data
         }]);
       } else {
         setMessages(prev => [...prev, { role: 'assistant', content: data.error || 'Lỗi hệ thống' }]);
@@ -127,7 +312,6 @@ export default function ChatPage() {
   const handleConfirm = async (msgIndex: number, txData: any, type: string) => {
     setIsLoading(true);
     try {
-      // Map properties for DB
       const dbData = type === 'Standard' ? {
         phan_loai: txData.phan_loai,
         lv1: txData.lv1,
@@ -203,34 +387,21 @@ export default function ChatPage() {
       <main className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth pb-24">
         {messages.map((msg, index) => (
           <div key={index} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-            <div className={`px-4 py-3 max-w-[85%] rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-tr-sm' : 'bg-neutral-800 text-neutral-100 rounded-tl-sm'}`}>
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+            <div className={`px-4 py-3 max-w-[90%] rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-tr-sm' : 'bg-neutral-800 text-neutral-100 rounded-tl-sm w-full'}`}>
               
+              {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+              
+              {msg.isReport && msg.reportData && (
+                <ReportCard data={msg.reportData} />
+              )}
+
               {msg.isConfirmCard && msg.confirmData && (
-                <div className="mt-3 p-3 bg-neutral-900 rounded-xl border border-neutral-700 text-sm">
-                  {msg.confirmType === 'Standard' ? (
-                    <>
-                      <p><span className="text-neutral-400">Loại:</span> {msg.confirmData.phan_loai}</p>
-                      <p><span className="text-neutral-400">Danh mục:</span> {msg.confirmData.lv1} {'>'} {msg.confirmData.lv2}</p>
-                    </>
-                  ) : (
-                    <>
-                      <p><span className="text-neutral-400">Loại nợ:</span> {msg.confirmData.sub_type}</p>
-                      <p><span className="text-neutral-400">Đối tác:</span> {msg.confirmData.ma_bp}</p>
-                    </>
-                  )}
-                  <p><span className="text-neutral-400">Số tiền:</span> <span className="font-bold text-emerald-400">{msg.confirmData.so_tien.toLocaleString()}đ</span></p>
-                  <p><span className="text-neutral-400">Ghi chú:</span> {msg.confirmData.ghi_chu}</p>
-                  
-                  <div className="flex gap-2 mt-4">
-                    <button onClick={() => handleConfirm(index, msg.confirmData, msg.confirmType!)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
-                      <CheckCircle size={16} /> Thực Hiện
-                    </button>
-                    <button onClick={() => handleCancel(index)} className="flex-1 bg-red-600/80 hover:bg-red-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
-                      <XCircle size={16} /> Hủy
-                    </button>
-                  </div>
-                </div>
+                <ConfirmCard 
+                  msg={msg} 
+                  msgIndex={index} 
+                  handleConfirm={handleConfirm} 
+                  handleCancel={handleCancel} 
+                />
               )}
             </div>
           </div>
@@ -239,7 +410,7 @@ export default function ChatPage() {
           <div className="flex items-start">
             <div className="bg-neutral-800 p-3 rounded-2xl rounded-tl-sm shadow-sm flex items-center gap-2">
               <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
-              <span className="text-neutral-400 text-sm">Đang suy nghĩ...</span>
+              <span className="text-neutral-400 text-sm">Đang truy xuất...</span>
             </div>
           </div>
         )}
@@ -252,7 +423,7 @@ export default function ChatPage() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ví dụ: Đổ xăng 50k..."
+            placeholder="Ví dụ: Nợ Tùng bao nhiêu..."
             className="flex-1 bg-transparent border-none text-white focus:ring-0 px-4 py-2 text-sm outline-none"
             disabled={isLoading}
           />

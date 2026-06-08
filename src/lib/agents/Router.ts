@@ -39,7 +39,8 @@ Bạn phải bóc tách tham số truy vấn:
 - Nếu hỏi khoảng thời gian: "query_type": "metric", "period": "this_week" | "this_month" | "last_month"
 
 HƯỚNG DẪN ĐỐI VỚI LABEL "Unclear":
-Bạn phải trả kèm "message" là một câu hỏi ngắn gọn gọn để hỏi lại người dùng cho rõ ràng.
+Bạn phải trả kèm "message" là một câu hỏi ngắn gọn gọn để hỏi lại người dùng cho rõ ràng. 
+CHÚ Ý QUAN TRỌNG: Hãy đọc kỹ "Lịch sử trò chuyện gần đây" (nếu có). Nếu Bot vừa hỏi lại và User vừa trả lời bổ sung thông tin (ví dụ Bot hỏi: "Tiêu dùng hay trả nợ?", User đáp: "Tiêu dùng"), thì bạn bắt buộc kết hợp lịch sử và câu mới để chốt Nhãn luôn (Standard hoặc Debt). TUYỆT ĐỐI KHÔNG ĐƯỢC trả Unclear lần 2 gây lặp vô tận.
 
 VÍ DỤ:
 - User: "Ăn phở 50k" -> {"intent": "Standard"}
@@ -74,13 +75,21 @@ TRẢ VỀ DUY NHẤT 1 CHUỖI JSON ĐÚNG ĐỊNH DẠNG. KHÔNG GIẢI THÍCH
     });
 
     if (!res.ok) {
-      throw new Error(`Groq API error: ${res.statusText}`);
+      throw new Error("Hệ thống AI đang quá tải (Groq), vui lòng thử lại sau.");
     }
 
     const data = await res.json();
-    return JSON.parse(data.choices[0].message.content) as RouterResponse;
-  } catch (error) {
+    try {
+      return JSON.parse(data.choices[0].message.content) as RouterResponse;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Router).");
+    }
+  } catch (error: any) {
     console.error("Router Error:", error);
-    throw new Error("Failed to route intent");
+    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+      throw error;
+    }
+    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
   }
 }

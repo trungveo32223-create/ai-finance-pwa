@@ -1,0 +1,1916 @@
+================================================================
+FILE: C:\Users\TDI\.gemini\antigravity\brain\1a63ea88-ce71-4493-a2fd-bce3c68882d7\project_specs.md
+================================================================
+# 📖 AI FINANCE PWA - PROJECT SPECS
+*(Tài liệu Đặc tả Dự án - Cập nhật liên tục)*
+
+Tài liệu này là "Luật Chơi" bất di bất dịch của dự án. Mọi dòng code được viết ra đều phải tuân thủ tuyệt đối các quy tắc trong tài liệu này.
+
+---
+
+## 0. TỔNG QUAN DỰ ÁN (OVERVIEW)
+- **Mục tiêu:** Xây dựng ứng dụng quản lý tài chính cá nhân siêu tốc qua giao diện Chat (PWA), dùng AI bóc tách ngôn ngữ tự nhiên để thay thế thao tác nhập liệu thủ công.
+- **Trạng thái hiện tại:** Đã code xong tính năng của **Phase 1 & 2** (Ghi sổ và Xem báo cáo). Tuy nhiên hệ thống **chưa Test toàn diện** và **chưa Harness** (đánh giá sức chịu tải & rủi ro thực tế). **Dựng bộ test (các case R/S/D) và chạy PASS 100% là điều kiện BẮT BUỘC để gọi là DONE.**
+- **Tech Stack:**
+  - **Frontend / Backend:** Next.js (App Router), React, Tailwind CSS.
+  - **Database:** Supabase (PostgreSQL).
+  - **Trí Tuệ Nhân Tạo (AI):** Groq (Llama 3.3 70B) dùng cho Router, DeepSeek V3 dùng cho Worker bóc tách nghiệp vụ.
+- **Mức độ Deploy (Production):** 
+  - Source code đẩy thủ công lên **GitHub**.
+  - Tự động Deploy CI/CD lên **Vercel** (Live URL).
+  - Data thật lưu trên **Supabase**. Hỗ trợ cài đặt thành App trên điện thoại (PWA).
+
+---
+
+## 1. KIẾN TRÚC AI & LUỒNG XỬ LÝ (4 THÀNH PHẦN)
+Hệ thống AI bóc tách tin nhắn gồm đúng 4 thành phần, được tinh gọn để xử lý song song và tối ưu chi phí:
+
+```mermaid
+graph TD
+    U[User Input] --> R{Agent Router<br/>Llama 3.3 70B}
+    
+    R -->|Standard| S[Agent Standard<br/>DeepSeek V3]
+    R -->|Debt| D[Agent Debt<br/>DeepSeek V3]
+    R -->|Query| Q[Module Query<br/>SQL Thuần]
+    R -->|Unclear| U2[Hỏi lại User]
+
+    S --> DB[(Supabase DB)]
+    D --> DB
+    Q --> DB
+```
+
+**Vai trò cụ thể:**
+1. **Agent_Router** (Llama 3.3 qua Groq): Nhận diện ý định, phân luồng tin nhắn, trích xuất tham số tra cứu. Nếu câu không rõ nghĩa -> Hỏi lại (Unclear).
+2. **Agent_Standard** (DeepSeek V3): Bóc tách Giao dịch thường (Thu nhập, Chi phí, Tiết kiệm, Đầu tư).
+3. **Agent_Debt** (DeepSeek V3): Bóc tách Công nợ (6 loại: Borrow, Lend, RepayPrincipal, CollectPrincipal, RepayInterest, CollectInterest).
+4. **Module_Query** (SQL Thuần): Không gọi LLM. Chỉ dịch tham số từ Router thành lệnh SQL đếm Dư nợ, tính Tổng Thu/Chi.
+5. ***(Deferred Phase 3)***: Route Valuation (Định giá thủ công, VD: "Vàng giá 95tr") chưa code, tạm gác lại chờ Phase 3 để không phải đập đi xây lại kiến trúc.
+
+---
+
+## 2. ĐẶC TẢ AGENT ROUTER
+Luôn trả về 1 trong 4 nhãn (Labels):
+- `Standard`: Giao dịch bình thường (Thu, chi, tiết kiệm, đầu tư).
+- `Debt`: Giao dịch nợ, bắt buộc kèm `sub_type`. **BẮT BUỘC trả về lỗi nếu thiếu tham số**: Thiếu tên người -> `{error: "MissingPartner"}`, thiếu số tiền -> `{error: "MissingAmount"}`. KHÔNG ĐƯỢC tự bịa `ma_bp: ""`.
+- `Query`: Tra cứu. Phải bóc tách `query_type` (debt, daily, metric) và các tham số phụ (`person`, `date`, `period`).
+- `Unclear`: Không rõ ràng. Phải trả kèm `message` hỏi lại user. **Khi user trả lời, frontend phải gửi kèm `context_history[]` (các tin nhắn trước) lên API; Router/Worker đọc đủ ngữ cảnh để tự chốt giao dịch, KHÔNG hỏi lại lần 2 (chống lặp vô tận).**
+
+---
+
+## 3. NGUYÊN TẮC KẾ TOÁN CHUẨN
+Khi tính toán báo cáo (Metric) hoặc ghi sổ, tuân thủ nguyên tắc Dòng Tiền và Dịch Chuyển Tài Sản:
+- **THU (Tăng tài sản ròng)** = Thu nhập thật + Lãi thu được (`CollectInterest`). *(TUYỆT ĐỐI KHÔNG cộng Thu nợ gốc)*.
+- **CHI (Giảm tài sản ròng)** = Chi phí thật + Lãi phải trả (`RepayInterest`). *(TUYỆT ĐỐI KHÔNG cộng Cho vay / Trả nợ gốc)*.
+- **GỐC NỢ** (Borrow, Lend, RepayPrincipal, CollectPrincipal): Là luân chuyển tài sản, không ảnh hưởng Thu/Chi. Chỉ dùng để tính Dư Nợ.
+- **DƯ NỢ** = `SUM(Lend + RepayPrincipal) - SUM(Borrow + CollectPrincipal)`. (Dương = Họ nợ mình. Âm = Mình nợ họ).
+
+---
+
+## 4. QUY TẮC THỜI GIAN & TIMEZONE
+Mọi xử lý ngày giờ trên Server (Vercel) phải ép về múi giờ Việt Nam.
+- **Timezone chuẩn:** `UTC+7` (`Asia/Ho_Chi_Minh`). Không dùng `new Date()` trần. Phải dùng hàm `nowVN()`.
+- **Date Range:** Một ngày bắt đầu từ `00:00:00` đến `23:59:59.999` (UTC+7).
+- **SQL Query:** Truy vấn theo mốc `created_at >= start AND created_at < end` (dùng `< ngày kế tiếp` để không hụt giây 59). Cột trong DB phải là kiểu `timestamptz`.
+
+---
+
+## 5. UI / UX & FRONTEND (NEXT.JS PWA)
+- **Bảo mật Passphrase:** Có màn hình đăng nhập tĩnh. Client hash SHA-256. Middleware chặn API nếu sai Hash.
+- **Thẻ Xác Nhận (Confirm Card):** Hiện tóm tắt giao dịch có nút `[Thực Hiện]` và `[Hủy]`. Không auto-commit. **Riêng giao dịch Debt, Confirm Card phải có Dropdown đối tác + tùy chọn "✏️ Nhập đối tác mới" → Hiện ô input inline ngay trong thẻ (TUYỆT ĐỐI không dùng `prompt()`).**
+- **Hoàn Tác (Undo):** Gọi lệnh Delete truyền đúng `txId`, hoặc gõ phím "Xóa cái vừa rồi".
+- **Tiếng Lóng (Slang):** Prompt Worker luôn chứa bảng quy đổi tiền tệ (ca, k, lít, xị, củ, chai, tỏi).
+
+---
+
+## 6. FACT-CHECK TABLE (Bảng Raw Data Inline)
+Khi Query Báo cáo, bắt buộc hiển thị Bảng Raw Data ở dưới dạng Toggle.
+- **API Response:** `Promise.all` chạy song song 2 Query (1 Aggregate, 1 Raw Data `LIMIT 10`) với **CÙNG 1 `WHERE` CLAUSE**.
+  - Trả về JSON: `{ summary, raw_data, total_count }`.
+- **UI Bảng:**
+  - Nằm inline ngay dưới báo cáo. Mặc định Đóng. Nút toggle: `📋 Xem chi tiết (X giao dịch) ▼`.
+  - Cuộn dọc max 10 dòng (height ~320px), cuộn ngang nếu màn hình nhỏ (min-width 420px).
+  - Header dính (sticky top). Cột tiền canh phải. Ghi chú truncate.
+  - Nếu `total_count === 0` -> Ẩn nút toggle.
+  - Nếu `total_count > 10` -> Dưới bảng ghi *"Hiển thị 10/X giao dịch gần nhất"*.
+
+---
+
+## 7. CHI TIẾT CÁC LUỒNG LOGIC (MERMAID FLOWS)
+
+### 7.1. Luồng Bóc Tách & Ghi Sổ Tiêu Dùng (Agent Standard)
+```mermaid
+graph TD
+    A[Tin nhắn User] --> B{Router: Standard}
+    B --> C[Agent_Standard bóc tách JSON]
+    C --> D{Phân loại}
+    
+    D -->|Thu nhập| E[Lưu DB: Thu nhập + Lv1 + Lv2]
+    D -->|Chi phí| F[Lưu DB: Chi phí + Lv1 + Lv2]
+    D -->|Tiết kiệm| G[Lưu DB: Tiết kiệm]
+    D -->|Đầu tư| H[Lưu DB: Đầu tư Vốn / Thị giá]
+
+    E --> I[Tăng Tài sản ròng]
+    F --> J[Giảm Tài sản ròng]
+    G --> K[Không đổi Tài sản ròng, Tăng Tiết kiệm]
+    H --> L[Không đổi Tài sản ròng, Tăng Đầu tư]
+```
+
+### 7.2. Luồng Bóc Tách & Xử Lý Công Nợ (Agent Debt)
+```mermaid
+graph TD
+    A[Tin nhắn User] --> B{Router: Debt}
+    B --> C[Agent_Debt bóc tách JSON]
+    C --> D{Xác định Sub-Type}
+    
+    D -->|Borrow| E[Đi vay: Tăng Tiền, Tăng Nợ phải trả]
+    D -->|Lend| F[Cho vay: Giảm Tiền, Tăng Nợ phải thu]
+    D -->|RepayPrincipal| G[Trả nợ gốc: Giảm Tiền, Giảm Nợ phải trả]
+    D -->|CollectPrincipal| H[Thu nợ gốc: Tăng Tiền, Giảm Nợ phải thu]
+    D -->|RepayInterest| I[Trả lãi: Giảm Tiền, Tính vào CHI PHÍ]
+    D -->|CollectInterest| J[Thu lãi: Tăng Tiền, Tính vào THU NHẬP]
+```
+
+### 7.3. Luồng Tính Toán Báo Cáo & Dòng Tiền (Module Query)
+*(Lưu ý cho Gemini: Dưới đây là sơ đồ minh họa, khi implement thực tế bắt buộc tuân thủ công thức Toán học ở Mục §3, đừng implement nhầm theo chữ "Nợ Họ/Họ Nợ" trong Mermaid này).*
+```mermaid
+graph TD
+    A[Yêu cầu Báo cáo] --> B{Query Type}
+    B -->|Metric/Daily| C[Tính Dòng Tiền & Tổng Thu/Chi]
+    B -->|Debt| D[Tính Dư Nợ Đối Tác]
+
+    C --> C1[Thu = SUM Thu Nhập + SUM CollectInterest]
+    C --> C2[Chi = SUM Chi Phí + SUM RepayInterest]
+    C --> C3[Dòng Tiền Thuần = Thu - Chi]
+
+    D --> D1[Nợ Họ = SUM Borrow + SUM CollectPrincipal]
+    D --> D2[Họ Nợ = SUM Lend + SUM RepayPrincipal]
+    D --> D3[Dư Nợ = Họ Nợ - Nợ Họ]
+```
+
+---
+
+## 8. CÂY DANH MỤC TIÊU CHUẨN (CATEGORIES TREE)
+Để hệ thống AI bóc tách chính xác tuyệt đối, mọi giao dịch Standard phải được map vào cây danh mục chuẩn (dựa trên file `Danh muc.csv`):
+
+- **🟢 THU NHẬP**
+  - Lương
+  - Thu nhập khác
+- **🔴 CHI PHÍ (Các Hạng Mục Lv1 -> Lv2)**
+  - **Ăn uống**: Ăn uống, Khác
+  - **Hóa đơn**: Điện thoại, Xăng, Nhớt, Momo, Shopee, SCB, Khác
+  - **Mua sắm**: Quần áo, Skin care, Đồ gia dụng, Supplement, Học tập, Đồ công nghệ, Khác
+  - **Y tế**: Y tế, Khác
+  - **Giải trí**: Giải trí, Khác
+  - **Hiếu hỉ**: Hiếu hỉ, Khác
+  - **Con cái**: Con cái, Khác
+  - **Nhà ở**: Nhà ở, Khác
+  - **Di chuyển**: Di chuyển, Khác
+  - **Quỹ lớp**: Quỹ lớp, Khác
+- **🏦 TIẾT KIỆM**
+  - Tiết kiệm
+  - Khác
+- **📈 ĐẦU TƯ (Lv1 luôn là "Đầu tư")**
+  - **Đầu tư (Vốn)**: Vàng (Vốn), Chứng khoán (Vốn), Gửi ngân hàng (Vốn), Crypto (Vốn). -> *PhanLoai = "Đầu tư (Vốn)"*
+  - **Đầu tư (Thị giá)**: Vàng (Thị giá), Chứng khoán (Thị giá), Gửi ngân hàng (Thị giá), Crypto (Thị giá). -> *PhanLoai = "Đầu tư (Thị giá)"*
+  - Khác
+
+---
+
+## 9. DANH SÁCH TÍNH NĂNG & ROADMAP PHÁT TRIỂN
+
+### ✅ PHẦN 1: CÁC TÍNH NĂNG ĐÃ HOÀN THIỆN (PHASE 1 & 2)
+1. **Bảo mật PWA:** Đăng nhập bằng Passphrase (băm SHA-256), Cookie bảo vệ API.
+2. **Giao diện Chatbot:** Khung chat phong cách Message, vuốt mượt mà, hỗ trợ tiếng lóng (k, củ, tỏi).
+3. **Phân loại AI (Router):** Nhận diện 4 ý định: Ghi sổ thường, Ghi sổ nợ, Tra cứu, Không rõ nghĩa.
+4. **Ghi sổ Tiêu dùng (Agent Standard):** Bóc tách chính xác Thu/Chi/Tiết kiệm/Đầu tư theo cây Danh Mục.
+5. **Ghi sổ Công nợ (Agent Debt):** Bóc tách chính xác 6 loại Gốc & Lãi, nhận diện đối tác (person).
+6. **Thẻ Xác Nhận (Confirm Card):** Chặn Auto-commit, hiện UI tóm tắt giao dịch chờ User duyệt (Thực hiện / Hủy).
+7. **Hoàn Tác (Undo):** Gọi lệnh xóa giao dịch vừa nhập khi User gõ "Xóa cái vừa rồi".
+8. **Truy vấn Dữ liệu (Query SQL):** 
+   - Đếm số dư nợ của một đối tác bất kỳ.
+   - Tính Tổng Thu, Tổng Chi, Dòng Tiền theo thời gian (Tuần, Tháng, Năm, Hôm qua, Hôm nay).
+9. **Inline Fact-Check Table:** Hiển thị Bảng Raw Data (max 10 dòng) ngay dưới thẻ Báo Cáo. Có thể bấm Mở/Gấp gọn.
+
+### 🚀 PHẦN 2: CÁC TÍNH NĂNG SẼ TRIỂN KHAI TIẾP THEO (PHASE 3, 4, 5)
+1. **[Phase 3] Biểu Đồ Trực Quan (Charts):**
+   - Tích hợp thư viện Recharts để hiển thị biểu đồ Tròn (Cơ cấu chi phí), biểu đồ Cột (Thu vs Chi) inline ngay trong dòng Chat khi sếp có yêu cầu báo cáo.
+2. **[Phase 4] Nhắc Nợ & Thông Báo Push:**
+   - Setup Cronjob quét database xem ai đang nợ quá hạn.
+   - Bắn thông báo Push Notification (PWA) thẳng xuống điện thoại. *(Caveat: Trên iOS, PWA Push Notification chỉ chạy từ iOS 16.4+ và bắt buộc user phải "Add to Home Screen")*.
+3. **[Phase 5] Macro-Finance Dashboard & AI Cố Vấn Vĩ Mô:**
+   - Xây dựng một bảng theo dõi các chỉ báo tài chính vĩ mô (Financial Indicators).
+   - Phân tích và xác định các chu kỳ kinh tế (ví dụ: Suy thoái, Bơm tiền).
+   - Phát hiện các thay đổi về chính sách tiền tệ (Monetary Policies) ảnh hưởng tới tài sản.
+   - Tích hợp thêm **1 Agent AI Tài chính siêu thông minh** (Chuyên gia Vĩ mô) để đưa ra cái nhìn tổng quan và lời khuyên chiến lược. *(Dành riêng cho giai đoạn tài sản đã tích lũy đủ lớn để tham gia đầu tư tài chính)*.
+
+---
+
+## 10. QUY TRÌNH PHỐI HỢP AI TỐI ƯU (WORKFLOW BOUNDARIES)
+Để tăng tốc độ phát triển dự án và giảm tải thao tác copy/paste thủ công, quy trình phối hợp giữa User (Giám đốc), Claude (Kiến trúc sư) và Gemini (Kỹ sư thi công) được quy định rõ:
+
+### 🟢 Vùng Gemini tự động hóa 100%:
+- Đọc hiểu Blueprint/Checklist từ User và chui thẳng vào Local Workspace để viết code, sửa file, tạo component mới.
+- Đọc lỗi (Bug) nếu có log và tự động refactor không cần hướng dẫn từng dòng.
+- *(Tương lai)*: Tự động chạy lệnh `git commit` và `git push` để tự Deploy lên Vercel nếu máy User có cài Git.
+
+### 🔴 Vùng User cần làm "Cầu nối" (Truyền tải thông tin):
+- **Giao tiếp Claude:** Gemini không có quyền truy cập chéo sang Claude. User bắt buộc phải copy thiết kế/review của Claude và thả vào ngữ cảnh của Gemini.
+- **Test UI / UX Thực tế:** Gemini không thể nhìn thấy màn hình điện thoại hay bấm vuốt app PWA. User phải là QA Tester để chạy thử luồng, kiểm tra giao diện (CSS) và đối chiếu số liệu thật.
+- **Deploy thủ công (Tạm thời):** Kéo thả thư mục dự án lên Github web để Vercel build (cho đến khi máy cài Git).
+
+---
+
+## 11. ERROR HANDLING & VALIDATION (Bắt buộc)
+Ứng dụng tài chính tuyệt đối KHÔNG tin tưởng 100% output của LLM.
+- **LLM Sập/Timeout:** Nếu Groq hoặc DeepSeek lỗi/timeout, API phải trả về HTTP 500 kèm thông báo UI rõ ràng: *"Hệ thống AI đang quá tải, vui lòng thử lại sau"*. Tuyệt đối không crash server.
+- **JSON Hỏng (Parse Error):** Nếu LLM trả text rác không thể `JSON.parse`, phải catch lỗi và báo UI: *"Dữ liệu AI trả về bị lỗi định dạng"*.
+- **Validation Server-side (Trước khi INSERT DB):**
+  - `so_tien` phải là số. Phải > 0 (ngoại trừ trường hợp rút tiết kiệm có thể âm/cộng dồn).
+  - `phan_loai` phải match 100% với danh sách trong Cây Danh Mục (§8). Nếu sai, báo lỗi từ chối INSERT.
+  - `date` phải là ISO string hợp lệ.
+
+---
+
+## CHANGELOG
+- [2026-06-06] Khởi tạo Specs và Workflow Protocol.
+- [2026-06-06] Vá 6 lỗ hổng: Thêm §11 Error Handling; Vá `context_history` cho luồng Unclear (§2); Thêm output lỗi `MissingPartner/Amount` cho Debt (§2); Thêm ô nhập đối tác mới inline (§5); Clarify PhanLoai Đầu tư (§8); Sửa typo & lưu ý iOS PWA (§7, §9).
+- [2026-06-07] Thêm §12 Đặc tả Giao diện Chat 2-Bit Brutalist chuẩn bị cho Phase 3.
+
+---
+
+## 12. GIAO DIỆN CHAT 2-BIT BRUTALIST (UI SPECS)
+
+Để chuẩn bị cho việc nâng cấp UI/UX, phần UI của App được quy định theo phong cách **2-Bit Dark Terminal Brutalism**. Toàn bộ cấu trúc giao diện chat đã được tổng hợp thành một file HTML/CSS duy nhất để Claude (hoặc AI Frontend Engineer) dễ dàng tham chiếu và tái hiện thành các React Components.
+
+### 12.1. Ngôn ngữ thiết kế (Design System)
+- **Màu sắc:** Bắt buộc chỉ dùng 2 màu chủ đạo: Đen tuyền (`#000000`) làm nền và Xanh chanh Neon (`#C2F500`) làm điểm nhấn/viền/chữ. Nhấn nhá thêm Trắng/Xám nhạt (`#E5E5E5`) cho bong bóng chat của Assistant để tạo tương phản. Không xài gradient hay drop-shadow mềm.
+- **Typography:** Dùng font `VT323` cho toàn bộ chữ trên giao diện. Font này tạo cảm giác pixel 8-bit gai góc nhưng vẫn hiển thị hoàn hảo dấu Tiếng Việt. 
+- **Hình khối (Shapes):** Tất cả các bong bóng chat, nút bấm, ô input đều phải bẻ cong bất đối xứng kiểu "giọt mực" (squircle blob) bằng thuộc tính `border-radius` chéo (ví dụ: `20px 10px 30px 20px / 20px 15px 25px 20px`).
+- **Iconography:** Chỉ dùng SVG tĩnh định dạng pixel thô (set `shape-rendering: crispEdges`).
+- **Hình động Nền (Easter Eggs):** Sử dụng kỹ thuật đổ bóng hộp (`box-shadow`) để vẽ các nhân vật 8-bit (Mario chạy, Khủng long nhảy, Ryu bắn chưởng, Claude thả bom) chạy ngầm dưới nền chat. Cần đặt `z-index` thấp, `opacity: 0.2` và `pointer-events: none` để không cản trở thao tác chat.
+
+### 12.2. Mã nguồn tham chiếu (HTML/CSS)
+Dưới đây là nguyên mẫu Vanilla HTML/CSS đã được chốt (tỷ lệ chuẩn iPhone 390x844). **Claude có nhiệm vụ đọc, hiểu cấu trúc này và chuyển hóa nó thành UI Components (Next.js / Tailwind CSS) khi được yêu cầu.**
+
+<details>
+<summary><b>Nhấn để xem Source Code Giao diện 2-Bit Brutalist</b></summary>
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2-Bit Brutalist Chat UI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --lime: #C2F500;
+    --black: #000000;
+    --white: #FFFFFF;
+    --light-grey: #E5E5E5;
+    --dim-lime: rgba(194, 245, 0, 0.2);
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background-color: #222;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'VT323', monospace;
+    color: var(--white);
+    font-size: 18px;
+  }
+
+  /* Phone Mockup Canvas */
+  .canvas {
+    width: 390px;
+    height: 844px;
+    background-color: var(--black);
+    position: relative;
+    overflow: hidden;
+    border: 4px solid var(--lime);
+    border-radius: 40px; 
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Status Bar */
+  .status-bar {
+    display: flex;
+    justify-content: space-between;
+    padding: 14px 24px;
+    font-size: 10px;
+    color: var(--lime);
+    align-items: center;
+    z-index: 10;
+  }
+  .status-bar-icons svg {
+    height: 10px;
+    margin-left: 6px;
+    fill: var(--lime);
+    shape-rendering: crispEdges;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 24px 20px;
+    border-bottom: 4px solid var(--lime);
+    z-index: 10;
+  }
+  
+  .header-title {
+    font-family: 'VT323', monospace;
+    font-size: 28px;
+    color: var(--lime);
+    text-transform: uppercase;
+    line-height: 1;
+  }
+
+  .concept-tag {
+    font-size: 14px;
+    background: var(--lime);
+    color: var(--black);
+    padding: 4px 6px;
+  }
+
+  /* Chat Area */
+  .chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    z-index: 5;
+  }
+
+  .chat-area::-webkit-scrollbar {
+    width: 0px;
+  }
+
+  /* Message Bubbles */
+  .msg-row {
+    display: flex;
+    width: 100%;
+  }
+
+  .msg-row.user {
+    justify-content: flex-end;
+  }
+
+  .msg-row.assistant {
+    justify-content: flex-start;
+  }
+
+  .bubble {
+    padding: 16px;
+    line-height: 1.6;
+    max-width: 85%;
+    position: relative;
+    border: 3px solid transparent;
+  }
+
+  /* User Bubble */
+  .bubble.user {
+    background-color: var(--lime);
+    color: var(--black);
+    border-radius: 20px 10px 30px 20px / 20px 15px 25px 20px;
+  }
+
+  /* Assistant Bubble */
+  .bubble.assistant {
+    background-color: var(--light-grey);
+    color: var(--black);
+    border-radius: 10px 30px 20px 30px / 15px 20px 30px 20px;
+  }
+
+  /* Brutalist Confirm Card */
+  .confirm-card {
+    background-color: var(--black) !important;
+    border: 3px solid var(--lime) !important;
+    color: var(--lime) !important;
+    border-radius: 20px 30px 15px 25px / 25px 20px 30px 15px !important;
+    padding: 16px !important;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .confirm-card .card-title {
+    font-size: 22px;
+    margin-bottom: 16px;
+    color: var(--white);
+  }
+
+  .confirm-card .card-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    font-size: 16px;
+  }
+  .confirm-card .card-val {
+    color: var(--white);
+  }
+  .confirm-card .card-val.amount {
+    font-size: 22px;
+    color: var(--lime);
+  }
+
+  .action-buttons {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  .btn {
+    flex: 1;
+    padding: 12px 8px;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    border: none;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .btn-confirm {
+    background-color: var(--lime);
+    color: var(--black);
+    border-radius: 10px 15px 5px 20px / 15px 10px 20px 5px;
+  }
+
+  .btn-cancel {
+    background-color: var(--white);
+    color: var(--black);
+    border-radius: 20px 5px 15px 10px / 10px 20px 5px 15px;
+  }
+
+  /* Input Area */
+  .input-area {
+    padding: 16px 20px 30px;
+    background-color: var(--black);
+    border-top: 4px solid var(--lime);
+    z-index: 10;
+  }
+
+  .input-blob {
+    display: flex;
+    align-items: center;
+    background-color: var(--black);
+    border: 3px solid var(--lime);
+    border-radius: 20px 25px 15px 30px / 25px 20px 30px 15px;
+    padding: 6px 6px 6px 16px;
+  }
+
+  .input-blob input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--lime);
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+  }
+  
+  .input-blob input::placeholder {
+    color: rgba(194, 245, 0, 0.5);
+  }
+
+  .send-btn {
+    background-color: var(--lime);
+    width: 36px;
+    height: 36px;
+    border-radius: 10px 15px 12px 20px / 15px 10px 20px 12px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: none;
+    cursor: pointer;
+  }
+
+  .send-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: var(--black);
+    shape-rendering: crispEdges;
+  }
+
+  /* =========================================
+     2-BIT BACKGROUND ANIMATIONS 
+     ========================================= */
+  .bg-animations {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 1;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .sprite {
+    position: absolute;
+    width: 4px; height: 4px;
+    background: transparent;
+    color: var(--dim-lime);
+  }
+
+  /* Street Fighter (Ryu Hadouken Pose) */
+  .street-fighter {
+    top: 40%;
+    left: 20px;
+    box-shadow:
+      16px 0, 20px 0, 24px 0, 28px 0,
+      12px 4px, 16px 4px, 20px 4px, 24px 4px, 28px 4px, 32px 4px,
+      12px 8px, 16px 8px, 20px 8px, 24px 8px, 28px 8px, 32px 8px, 36px 8px,
+      16px 12px, 20px 12px, 24px 12px, 28px 12px,
+      16px 16px, 20px 16px, 24px 16px, 28px 16px,
+      12px 20px, 16px 20px, 20px 20px, 24px 20px, 28px 20px, 32px 20px, 36px 20px, 40px 20px,
+      8px 24px, 12px 24px, 16px 24px, 20px 24px, 24px 24px, 28px 24px, 32px 24px, 36px 24px, 40px 24px, 44px 24px,
+      0px 28px, 4px 28px, 8px 28px, 12px 28px, 16px 28px, 20px 28px, 24px 28px, 28px 28px, 32px 28px, 36px 28px, 40px 28px,
+      12px 32px, 16px 32px, 20px 32px, 24px 32px, 28px 32px, 32px 32px, 36px 32px,
+      16px 36px, 20px 36px, 24px 36px, 28px 36px, 32px 36px,
+      16px 40px, 20px 40px, 28px 40px, 32px 40px,
+      16px 44px, 20px 44px, 28px 44px, 32px 44px,
+      12px 48px, 16px 48px, 32px 48px, 36px 48px;
+  }
+
+  /* Hadouken Fireball */
+  .hadouken {
+    top: calc(40% + 20px);
+    left: 80px;
+    box-shadow:
+      8px 0, 12px 0, 16px 0, 20px 0, 24px 0,
+      4px 4px, 8px 4px, 12px 4px, 16px 4px, 20px 4px, 24px 4px, 28px 4px,
+      0px 8px, 4px 8px, 8px 8px, 12px 8px, 16px 8px, 20px 8px, 24px 8px, 28px 8px, 32px 8px, 36px 8px,
+      4px 12px, 8px 12px, 12px 12px, 16px 12px, 20px 12px, 24px 12px, 28px 12px,
+      8px 16px, 12px 16px, 16px 16px, 20px 16px, 24px 16px;
+    animation: shoot 3s infinite linear;
+  }
+  @keyframes shoot {
+    0% { left: 80px; opacity: 1; }
+    60% { left: 350px; opacity: 1; }
+    61% { opacity: 0; }
+    100% { left: 350px; opacity: 0; }
+  }
+
+  /* Mario Running */
+  .mario {
+    bottom: 150px;
+    left: -50px;
+    box-shadow: 
+      12px 0, 16px 0, 20px 0, 24px 0, 28px 0,
+      8px 4px, 12px 4px, 16px 4px, 20px 4px, 24px 4px, 28px 4px, 32px 4px, 36px 4px,
+      8px 8px, 12px 8px, 16px 8px, 20px 8px, 24px 8px, 28px 8px,
+      8px 12px, 12px 12px, 16px 12px, 20px 12px, 24px 12px,
+      12px 16px, 16px 16px, 20px 16px, 24px 16px,
+      8px 20px, 12px 20px, 16px 20px, 20px 20px, 24px 20px, 28px 20px, 32px 20px,
+      4px 24px, 8px 24px, 12px 24px, 16px 24px, 20px 24px, 24px 24px, 28px 24px, 32px 24px, 36px 24px,
+      0px 28px, 4px 28px, 8px 28px, 16px 28px, 24px 28px, 32px 28px, 36px 28px, 40px 28px,
+      12px 32px, 16px 32px, 24px 32px, 28px 32px,
+      8px 36px, 12px 36px, 28px 36px, 32px 36px;
+    animation: runRight 8s infinite linear;
+  }
+  @keyframes runRight {
+    0% { left: -50px; }
+    100% { left: 450px; }
+  }
+
+  /* Dino Jumping */
+  .dino {
+    bottom: 250px;
+    right: -50px;
+    box-shadow:
+      32px 0, 36px 0, 40px 0, 44px 0, 48px 0,
+      32px 4px, 36px 4px, 40px 4px, 44px 4px, 48px 4px, 52px 4px,
+      32px 8px, 36px 8px, 40px 8px,
+      32px 12px, 36px 12px, 40px 12px, 44px 12px, 48px 12px,
+      32px 16px, 36px 16px, 40px 16px, 44px 16px, 48px 16px,
+      32px 20px, 36px 20px, 40px 20px,
+      4px 24px, 32px 24px, 36px 24px,
+      4px 28px, 8px 28px, 28px 28px, 32px 28px,
+      4px 32px, 8px 32px, 12px 32px, 16px 32px, 20px 32px, 24px 32px, 28px 32px, 32px 32px,
+      4px 36px, 8px 36px, 12px 36px, 16px 36px, 20px 36px, 24px 36px, 28px 36px, 32px 36px,
+      4px 40px, 8px 40px, 12px 40px, 16px 40px, 20px 40px, 24px 40px, 28px 40px,
+      8px 44px, 12px 44px, 16px 44px, 20px 44px, 24px 44px, 28px 44px,
+      12px 48px, 16px 48px, 20px 48px,
+      12px 52px, 16px 52px,
+      12px 56px, 20px 56px,
+      12px 60px, 20px 60px;
+    animation: runLeft 10s infinite linear, jump 2.5s infinite ease-out;
+  }
+  @keyframes runLeft {
+    0% { right: -60px; }
+    100% { right: 450px; }
+  }
+  @keyframes jump {
+    0%, 80%, 100% { transform: translateY(0); }
+    90% { transform: translateY(-60px); }
+  }
+
+  /* Claude Robot */
+  .claude {
+    top: 80px;
+    left: -60px;
+    box-shadow:
+      16px 0, 20px 0, 24px 0, 28px 0,
+      12px 4px, 16px 4px, 20px 4px, 24px 4px, 28px 4px, 32px 4px,
+      8px 8px, 12px 8px, 16px 8px, 20px 8px, 24px 8px, 28px 8px, 32px 8px, 36px 8px,
+      8px 12px, 12px 12px, 16px 12px, 20px 12px, 24px 12px, 28px 12px, 32px 12px, 36px 12px,
+      8px 16px, 12px 16px, 16px 16px, 28px 16px, 32px 16px, 36px 16px,
+      8px 20px, 12px 20px, 16px 20px, 20px 20px, 24px 20px, 28px 20px, 32px 20px, 36px 20px,
+      12px 24px, 16px 24px, 20px 24px, 24px 24px, 28px 24px, 32px 24px,
+      16px 28px, 20px 28px, 24px 28px, 28px 28px,
+      20px 32px, 24px 32px;
+    animation: flyRight 15s infinite linear;
+  }
+  @keyframes flyRight {
+    0% { left: -60px; }
+    100% { left: 450px; }
+  }
+
+  /* Bomb */
+  .bomb {
+    animation: dropBomb 15s infinite linear;
+  }
+  @keyframes dropBomb {
+    0%, 40% { top: 80px; left: -100px; opacity: 0; }
+    41% { top: 110px; left: 160px; opacity: 1; }
+    46% { top: 850px; left: 160px; opacity: 1; }
+    47%, 100% { top: 850px; opacity: 0; }
+  }
+  .bomb-sprite {
+    box-shadow:
+      12px 0, 16px 0,
+      8px 4px, 12px 4px, 16px 4px, 20px 4px,
+      4px 8px, 8px 8px, 12px 8px, 16px 8px, 20px 8px, 24px 8px,
+      4px 12px, 8px 12px, 12px 12px, 16px 12px, 20px 12px, 24px 12px,
+      4px 16px, 8px 16px, 12px 16px, 16px 16px, 20px 16px, 24px 16px,
+      8px 20px, 12px 20px, 16px 20px, 20px 20px,
+      12px 24px, 16px 24px;
+  }
+
+</style>
+</head>
+<body>
+
+<div class="canvas">
+  
+  <!-- BACKGROUND ANIMATIONS -->
+  <div class="bg-animations">
+    <div class="sprite street-fighter"></div>
+    <div class="sprite hadouken"></div>
+    <div class="sprite mario"></div>
+    <div class="sprite dino"></div>
+    <div class="sprite claude"></div>
+    <div class="sprite bomb"><div class="sprite bomb-sprite"></div></div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span>9:41</span>
+    <div class="status-bar-icons">
+      <svg viewBox="0 0 16 12"><path d="M0 8h3v4H0zm4-3h3v7H4zm4-3h3v10H8zm4-2h3v12h-3z"/></svg>
+      <svg viewBox="0 0 16 12"><path d="M8 9l-2 3h4l-2-3zm0-3l-4 5c2 2 6 2 8 0l-4-5zm0-3L2 6c3 3 9 3 12 0L8 3zm0-3L0 4c4 4 12 4 16 0L8 0z"/></svg>
+      <svg viewBox="0 0 20 12"><path d="M1 1h16v10H1V1zm1 1v8h14V2H2zm15 3h2v4h-2V5z"/></svg>
+    </div>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">FIN_CHAT</div>
+    <div class="concept-tag">// RAW</div>
+  </div>
+
+  <!-- Chat Area -->
+  <div class="chat-area">
+    
+    <div class="msg-row assistant">
+      <div class="bubble assistant">
+        Chào sếp! Hôm nay sếp muốn ghi sổ hay tra cứu tài chính gì ạ?
+      </div>
+    </div>
+
+    <div class="msg-row user">
+      <div class="bubble user">
+        Vay Tùng 500k
+      </div>
+    </div>
+
+    <div class="msg-row assistant">
+      <div class="bubble assistant confirm-card">
+        <div class="card-title">CONFIRM TX</div>
+        <div class="card-row">
+          <span>TYPE:</span>
+          <span class="card-val">BORROW</span>
+        </div>
+        <div class="card-row">
+          <span>PARTNER:</span>
+          <span class="card-val">TÙNG</span>
+        </div>
+        <div class="card-row">
+          <span>AMOUNT:</span>
+          <span class="card-val amount">500,000 đ</span>
+        </div>
+        
+        <div class="action-buttons">
+          <button class="btn btn-confirm">THỰC HIỆN</button>
+          <button class="btn btn-cancel">HỦY BỎ</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="msg-row user">
+      <div class="bubble user">
+        Chuyển 2 củ
+      </div>
+    </div>
+
+    <div class="msg-row assistant">
+      <div class="bubble assistant">
+        Sếp chuyển cho việc gì ạ?
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Input Area -->
+  <div class="input-area">
+    <div class="input-blob">
+      <input type="text" placeholder="TYPE HERE..." value="Mua gạo 100">
+      <button class="send-btn">
+        <!-- Pixel Arrow SVG -->
+        <svg viewBox="0 0 16 16">
+          <path d="M0 6h8V4h2V2h2V0h2v2h-2v2h-2v2h2v2h2v2h-2v2h-2v2h-2v2H8v-2h2v-2h2v-2H0V6z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
+```
+</details>
+
+
+
+
+
+================================================================
+FILE: .env.local
+================================================================
+NEXT_PUBLIC_SUPABASE_URL=https://zwmvodpdbbjfapkfpufr.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp3bXZvZHBkYmJqZmFwa2ZwdWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NDM0NDUsImV4cCI6MjA5NjIxOTQ0NX0.NHwraASSIKCEW9Z-MvyGB6nMjkEkG4_IWfmEeWvQV0A
+
+# API Keys AI (Để tạm ở đây, khi lên Vercel sếp sẽ điền sau)
+GROQ_KEY_1=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
+GROQ_KEY_2=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
+DEEPSEEK_KEY_1=sk-126e4231f36140f0914188f706681dac
+DEEPSEEK_KEY_2=
+GEMINI_KEY_1=AQ.Ab8RN6KappcMTI4QhEpq4R-W4RP62lqIZq03FTfkXtueUsD0oA
+GEMINI_KEY_2=
+
+
+
+================================================================
+FILE: package.json
+================================================================
+{
+  "name": "ai-finance-pwa",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "next": "^14.2.15",
+    "@supabase/supabase-js": "^2.43.4",
+    "lucide-react": "^0.378.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.12",
+    "@types/react": "^18.3.2",
+    "@types/react-dom": "^18.3.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "autoprefixer": "^10.4.19"
+  }
+}
+
+
+
+================================================================
+FILE: tailwind.config.js
+================================================================
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        background: "var(--background)",
+        foreground: "var(--foreground)",
+      },
+    },
+  },
+  plugins: [],
+}
+
+
+
+================================================================
+FILE: src\app\layout.tsx
+================================================================
+import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "AI Finance PWA",
+  description: "Trợ lý tài chính cá nhân siêu tốc độ",
+  manifest: "/manifest.json",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="vi">
+      <body className="antialiased bg-gray-50 text-gray-900">
+        {children}
+      </body>
+    </html>
+  );
+}
+
+
+
+================================================================
+FILE: src\app\globals.css
+================================================================
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+. c u s t o m - s c r o l l b a r : : - w e b k i t - s c r o l l b a r   {   w i d t h :   6 p x ;   h e i g h t :   6 p x ;   }   . c u s t o m - s c r o l l b a r : : - w e b k i t - s c r o l l b a r - t r a c k   {   b a c k g r o u n d :   t r a n s p a r e n t ;   }   . c u s t o m - s c r o l l b a r : : - w e b k i t - s c r o l l b a r - t h u m b   {   b a c k g r o u n d - c o l o r :   # 5 2 5 2 5 2 ;   b o r d e r - r a d i u s :   1 0 p x ;   } 
+ 
+ 
+
+
+
+================================================================
+FILE: src\app\page.tsx
+================================================================
+'use client';
+
+import { useState, useRef, useEffect } from 'react';
+import { Send, Loader2, Wallet, Lock, XCircle, CheckCircle, ChevronDown, ChevronUp } from 'lucide-react';
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  isConfirmCard?: boolean;
+  confirmData?: any;
+  confirmType?: 'Standard' | 'Debt';
+  isUnclear?: boolean;
+  isReport?: boolean;
+  reportData?: any;
+}
+
+// Simple SHA-256 hash
+async function sha256(message: string) {
+  const msgBuffer = new TextEncoder().encode(message);                    
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
+
+function ReportCard({ data }: { data: any }) {
+  const [showTable, setShowTable] = useState(false);
+
+  if (data.type === 'debt') {
+    return (
+      <div className="mt-2 w-full">
+        <p className="whitespace-pre-wrap mb-2">{data.message}</p>
+        {data.total_count > 0 && (
+          <div className="mt-3">
+            <button 
+              onClick={() => setShowTable(!showTable)}
+              className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors"
+            >
+              {showTable ? <><ChevronUp size={16} className="mr-1"/> ⬆️ Thu gọn</> : <><ChevronDown size={16} className="mr-1"/> 📋 Xem chi tiết ({data.total_count} GD)</>}
+            </button>
+            
+            {showTable && (
+              <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Metric
+  const dongTienStr = data.summary.dongTien > 0 ? `+${data.summary.dongTien.toLocaleString('vi-VN')}` : data.summary.dongTien.toLocaleString('vi-VN');
+  
+  return (
+    <div className="mt-2 w-full bg-neutral-900 rounded-xl border border-neutral-700 p-4">
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-xl">📊</span>
+        <h3 className="font-bold text-white">{data.title}</h3>
+      </div>
+      <p className="text-xs text-neutral-400 mb-4">{data.periodStr}</p>
+      
+      <div className="space-y-2 text-sm mb-4">
+        <div className="flex justify-between"><span className="text-neutral-400">💰 Tổng thu:</span> <span className="font-semibold text-emerald-400">{data.summary.thu.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">💸 Tổng chi:</span> <span className="font-semibold text-red-400">{data.summary.chi.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">🏦 Tiết kiệm:</span> <span>{data.summary.tietKiem.toLocaleString('vi-VN')} đ</span></div>
+        <div className="flex justify-between"><span className="text-neutral-400">📈 Đầu tư:</span> <span>{data.summary.dauTu.toLocaleString('vi-VN')} đ</span></div>
+      </div>
+      
+      <div className="border-t border-neutral-700 pt-3 pb-1 mb-2">
+        <div className="flex justify-between items-center">
+          <span className="font-bold text-sm text-neutral-300">DÒNG TIỀN THUẦN:</span>
+          <span className={`font-bold ${data.summary.dongTien >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {dongTienStr} đ
+          </span>
+        </div>
+      </div>
+
+      {data.total_count > 0 && (
+        <div className="mt-4 pt-3 border-t border-neutral-800">
+          <button 
+            onClick={() => setShowTable(!showTable)}
+            className="flex items-center text-emerald-400 font-medium text-sm hover:text-emerald-300 transition-colors w-full justify-center"
+          >
+            {showTable ? <><ChevronUp size={16} className="mr-1"/> ⬆️ Thu gọn</> : <><ChevronDown size={16} className="mr-1"/> 📋 Xem chi tiết ({data.total_count} GD)</>}
+          </button>
+          
+          {showTable && (
+            <FactCheckTable rawData={data.raw_data} totalCount={data.total_count} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactCheckTable({ rawData, totalCount }: { rawData: any[], totalCount: number }) {
+  return (
+    <div className="mt-3 w-full animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="max-h-[320px] overflow-y-auto overflow-x-auto border border-neutral-700 rounded-lg custom-scrollbar bg-neutral-900/50">
+        <table className="w-full min-w-[380px] text-[13px] border-collapse text-left">
+          <thead className="sticky top-0 bg-neutral-800 z-10 shadow-sm">
+            <tr>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Ngày</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Loại</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-right text-neutral-300">Tiền</th>
+              <th className="p-2 border-b border-neutral-700 font-semibold whitespace-nowrap text-neutral-300">Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rawData.map((row, idx) => {
+              // Parse date to dd/mm
+              const dateStr = row.tx_date ? row.tx_date.split('-').slice(1).reverse().join('/') : '--/--';
+              // Loại (Lv2 or SubType)
+              let typeStr = row.lv2 || row.sub_type || row.phan_loai;
+              if (row.ma_bp) typeStr = row.ma_bp.replace('MỚI - ', '');
+              
+              const isPositive = row.phan_loai === 'Thu nhập' || row.sub_type === 'CollectInterest';
+              const isNegative = row.phan_loai === 'Chi phí' || row.sub_type === 'RepayInterest';
+              const colorClass = isPositive ? 'text-emerald-400' : (isNegative ? 'text-red-400' : 'text-neutral-300');
+
+              return (
+                <tr key={idx} className="hover:bg-neutral-800/50 transition-colors">
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap text-neutral-400">{dateStr}</td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-nowrap truncate max-w-[80px]" title={typeStr}>{typeStr}</td>
+                  <td className={`p-2 border-b border-neutral-800 whitespace-nowrap text-right font-medium ${colorClass}`}>
+                    {row.so_tien.toLocaleString('vi-VN')} đ
+                  </td>
+                  <td className="p-2 border-b border-neutral-800 whitespace-normal max-w-[120px]">
+                    <div className="truncate" title={row.ghi_chu}>{row.ghi_chu}</div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {totalCount > 10 && (
+        <p className="text-[11px] text-center text-neutral-500 mt-2 italic">
+          Hiển thị 10/{totalCount} giao dịch mới nhất
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ConfirmCard({ msg, msgIndex, handleConfirm, handleCancel }: { msg: any, msgIndex: number, handleConfirm: any, handleCancel: any }) {
+  const [partnerMode, setPartnerMode] = useState<'text' | 'input'>('text');
+  const [partnerName, setPartnerName] = useState(msg.confirmData?.ma_bp || '');
+
+  const onConfirm = () => {
+    const updatedData = { ...msg.confirmData };
+    if (msg.confirmType === 'Debt') {
+      updatedData.ma_bp = partnerName;
+    }
+    handleConfirm(msgIndex, updatedData, msg.confirmType);
+  };
+
+  return (
+    <div className="mt-3 p-3 bg-neutral-900 rounded-xl border border-neutral-700 text-sm">
+      {msg.confirmType === 'Standard' ? (
+        <>
+          <p><span className="text-neutral-400">Loại:</span> {msg.confirmData.phan_loai}</p>
+          <p><span className="text-neutral-400">Danh mục:</span> {msg.confirmData.lv1} {'>'} {msg.confirmData.lv2}</p>
+        </>
+      ) : (
+        <>
+          <p><span className="text-neutral-400">Loại nợ:</span> {msg.confirmData.sub_type}</p>
+          <div className="flex items-center gap-2 mt-1 mb-1">
+            <span className="text-neutral-400">Đối tác:</span>
+            {partnerMode === 'text' ? (
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{partnerName}</span>
+                <button onClick={() => setPartnerMode('input')} className="text-xs text-emerald-400 hover:text-emerald-300">
+                  ✏️ Sửa
+                </button>
+              </div>
+            ) : (
+              <input 
+                autoFocus
+                type="text" 
+                value={partnerName} 
+                onChange={e => setPartnerName(e.target.value)} 
+                className="bg-neutral-800 border border-neutral-600 rounded px-2 py-1 text-white text-xs outline-none focus:border-emerald-500 flex-1"
+                placeholder="Nhập đối tác mới..."
+              />
+            )}
+          </div>
+        </>
+      )}
+      <p><span className="text-neutral-400">Số tiền:</span> <span className="font-bold text-emerald-400">{msg.confirmData.so_tien.toLocaleString()}đ</span></p>
+      <p><span className="text-neutral-400">Ghi chú:</span> {msg.confirmData.ghi_chu}</p>
+      
+      <div className="flex gap-2 mt-4">
+        <button onClick={onConfirm} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <CheckCircle size={16} /> Thực Hiện
+        </button>
+        <button onClick={() => handleCancel(msgIndex)} className="flex-1 bg-red-600/80 hover:bg-red-500 py-2 rounded-lg flex items-center justify-center gap-1 font-medium transition-colors">
+          <XCircle size={16} /> Hủy
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function ChatPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  const [messages, setMessages] = useState<Message[]>([
+    { role: 'assistant', content: 'Chào sếp! Sếp muốn ghi sổ hay tra cứu gì hôm nay ạ?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (document.cookie.includes('auth_token=')) {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const hash = await sha256(passphrase);
+    
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passHash: hash })
+    });
+
+    if (res.ok) {
+      setIsAuthenticated(true);
+    } else {
+      const data = await res.json();
+      setAuthError(data.error || 'Sai mật khẩu!');
+    }
+  };
+
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = input;
+    setInput('');
+    const newMessages = [...messages, { role: 'user' as const, content: userMessage }];
+    setMessages(newMessages);
+    setIsLoading(true);
+
+    try {
+      if (userMessage.toLowerCase().includes('xóa cái vừa rồi') || userMessage.toLowerCase() === 'undo') {
+        const res = await fetch('/api/transactions', { method: 'DELETE' });
+        const data = await res.json();
+        setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+        setIsLoading(false);
+        return;
+      }
+
+      const history = newMessages.slice(-5).map(m => ({ role: m.role, content: m.content }));
+
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage, history })
+      });
+
+      if (res.status === 401) {
+        setIsAuthenticated(false);
+        setIsLoading(false);
+        return;
+      }
+
+      const data = await res.json();
+
+      if (data.action === 'UNCLEAR' || data.action === 'MESSAGE') {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+      } else if (data.action === 'CONFIRM_REQUIRED') {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: 'Sếp kiểm tra lại thông tin trước khi ghi sổ nhé:',
+          isConfirmCard: true,
+          confirmData: data.data,
+          confirmType: data.type
+        }]);
+      } else if (data.action === 'REPORT') {
+        setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: '',
+          isReport: true,
+          reportData: data.data
+        }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', content: data.error || 'Lỗi hệ thống' }]);
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối máy chủ.' }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleConfirm = async (msgIndex: number, txData: any, type: string) => {
+    setIsLoading(true);
+    try {
+      const dbData = type === 'Standard' ? {
+        phan_loai: txData.phan_loai,
+        lv1: txData.lv1,
+        lv2: txData.lv2,
+        so_tien: txData.so_tien,
+        ghi_chu: txData.ghi_chu,
+        tx_date: txData.ngay
+      } : {
+        phan_loai: 'Công nợ',
+        sub_type: txData.sub_type,
+        ma_bp: txData.ma_bp,
+        so_tien: txData.so_tien,
+        ghi_chu: txData.ghi_chu,
+        tx_date: txData.ngay
+      };
+
+      const res = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txData: dbData })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[msgIndex] = { role: 'assistant', content: `✅ Đã ghi sổ thành công! (ID: ${data.txId})` };
+          return updated;
+        });
+      }
+    } catch (err) {
+      alert("Lỗi khi lưu!");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCancel = (msgIndex: number) => {
+    setMessages(prev => {
+      const updated = [...prev];
+      updated[msgIndex] = { role: 'assistant', content: '🚫 Đã hủy giao dịch.' };
+      return updated;
+    });
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="flex h-screen bg-neutral-900 text-white items-center justify-center p-4">
+        <form onSubmit={handleLogin} className="bg-neutral-800 p-8 rounded-2xl w-full max-w-sm flex flex-col gap-4">
+          <div className="flex justify-center mb-4"><Lock size={48} className="text-emerald-500" /></div>
+          <h1 className="text-2xl font-bold text-center">Xác Thực</h1>
+          <input 
+            type="password" 
+            value={passphrase} 
+            onChange={(e) => setPassphrase(e.target.value)}
+            placeholder="Nhập Passphrase..." 
+            className="p-3 rounded-lg bg-neutral-700 text-white outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          {authError && <p className="text-red-400 text-sm text-center">{authError}</p>}
+          <button type="submit" className="bg-emerald-600 p-3 rounded-lg font-bold mt-2 hover:bg-emerald-500">Mở Khóa</button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen bg-neutral-900 text-white font-sans max-w-md mx-auto shadow-2xl relative overflow-hidden">
+      <header className="flex items-center justify-center p-4 bg-neutral-800/80 backdrop-blur border-b border-neutral-700/50 sticky top-0 z-10">
+        <Wallet className="w-6 h-6 mr-2 text-emerald-400" />
+        <h1 className="text-lg font-bold tracking-wide">AI Finance App</h1>
+      </header>
+
+      <main className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth pb-24">
+        {messages.map((msg, index) => (
+          <div key={index} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+            <div className={`px-4 py-3 max-w-[90%] rounded-2xl shadow-sm ${msg.role === 'user' ? 'bg-emerald-600 text-white rounded-tr-sm' : 'bg-neutral-800 text-neutral-100 rounded-tl-sm w-full'}`}>
+              
+              {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+              
+              {msg.isReport && msg.reportData && (
+                <ReportCard data={msg.reportData} />
+              )}
+
+              {msg.isConfirmCard && msg.confirmData && (
+                <ConfirmCard 
+                  msg={msg} 
+                  msgIndex={index} 
+                  handleConfirm={handleConfirm} 
+                  handleCancel={handleCancel} 
+                />
+              )}
+            </div>
+          </div>
+        ))}
+        {isLoading && (
+          <div className="flex items-start">
+            <div className="bg-neutral-800 p-3 rounded-2xl rounded-tl-sm shadow-sm flex items-center gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
+              <span className="text-neutral-400 text-sm">Đang truy xuất...</span>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </main>
+
+      <footer className="p-3 bg-neutral-800/90 backdrop-blur border-t border-neutral-700/50 absolute bottom-0 w-full">
+        <form onSubmit={handleSend} className="flex items-end gap-2 bg-neutral-900 p-1.5 rounded-3xl border border-neutral-700 focus-within:border-emerald-500/50 transition-colors">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ví dụ: Nợ Tùng bao nhiêu..."
+            className="flex-1 bg-transparent border-none text-white focus:ring-0 px-4 py-2 text-sm outline-none"
+            disabled={isLoading}
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || isLoading}
+            className="bg-emerald-600 text-white p-2.5 rounded-full hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 transition-colors shadow-sm shrink-0"
+          >
+            <Send className="w-5 h-5 ml-0.5" />
+          </button>
+        </form>
+      </footer>
+    </div>
+  );
+}
+
+
+
+================================================================
+FILE: src\app\api\chat\route.ts
+================================================================
+import { NextResponse } from 'next/server';
+import { routeIntent } from '@/lib/agents/Router';
+import { processStandard } from '@/lib/agents/Standard';
+import { processDebt } from '@/lib/agents/Debt';
+import { processQuery } from '@/lib/agents/Query';
+import { MessageContext } from '@/lib/agents/types';
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const message = body.message;
+    const history: MessageContext[] = body.history || [];
+
+    if (!message) {
+      return NextResponse.json({ error: 'Missing message' }, { status: 400 });
+    }
+
+    // 1. Phân luồng bằng Agent_Router
+    const routerParams = await routeIntent(message, history);
+
+    // 2. Chuyển hướng theo Nhãn
+    if (routerParams.intent === 'Unclear') {
+      return NextResponse.json({ 
+        action: 'UNCLEAR', 
+        message: routerParams.message || "Xin lỗi, sếp có thể nói rõ hơn khoản này là chi tiêu hay nợ không ạ?" 
+      });
+    }
+
+    if (routerParams.intent === 'Query') {
+      const result = await processQuery(routerParams);
+      if (result.error) {
+        return NextResponse.json({ action: 'MESSAGE', message: result.error });
+      }
+      return NextResponse.json({ 
+        action: 'REPORT', 
+        data: result 
+      });
+    }
+
+    if (routerParams.intent === 'Standard') {
+      const data = await processStandard(message, history);
+      return NextResponse.json({
+        action: 'CONFIRM_REQUIRED',
+        type: 'Standard',
+        data: data
+      });
+    }
+
+    if (routerParams.intent === 'Debt') {
+      const subType = routerParams.sub_type;
+      if (!subType) throw new Error("Lỗi Router: Mất sub_type của luồng Debt");
+      
+      const data = await processDebt(message, subType, history);
+      
+      if (data.error === 'MissingPartner') {
+        return NextResponse.json({
+          action: 'UNCLEAR',
+          message: "Giao dịch công nợ nhưng em không thấy Tên Người. Sếp giao dịch với ai thế ạ?"
+        });
+      }
+      
+      if (data.error === 'MissingAmount') {
+        return NextResponse.json({
+          action: 'UNCLEAR',
+          message: "Sếp giao dịch công nợ bao nhiêu tiền thế ạ?"
+        });
+      }
+
+      return NextResponse.json({
+        action: 'CONFIRM_REQUIRED',
+        type: 'Debt',
+        data: data
+      });
+    }
+
+    if (routerParams.intent === 'Valuation') {
+      return NextResponse.json({ action: 'MESSAGE', message: "Tính năng cập nhật giá trị (Valuation) sẽ ra mắt ở Phase 3!" });
+    }
+
+    return NextResponse.json({ action: 'ERROR', message: "Không nhận diện được ý định." });
+
+  } catch (error: any) {
+    console.error("API Error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+
+
+================================================================
+FILE: src\app\api\transactions\route.ts
+================================================================
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
+
+const VALID_PHAN_LOAI = ["Thu nhập", "Chi phí", "Tiết kiệm", "Đầu tư (Vốn)", "Đầu tư (Thị giá)", "Công nợ"];
+
+function validateTx(txData: any) {
+  if (typeof txData.so_tien !== 'number' || isNaN(txData.so_tien)) {
+    throw new Error("Số tiền (so_tien) phải là kiểu số hợp lệ.");
+  }
+  // Cho phép rút tiết kiệm là số âm
+  if (txData.so_tien <= 0 && txData.phan_loai !== 'Tiết kiệm') {
+    throw new Error("Số tiền giao dịch phải lớn hơn 0.");
+  }
+  if (!VALID_PHAN_LOAI.includes(txData.phan_loai)) {
+    throw new Error(`Loại giao dịch không hợp lệ: ${txData.phan_loai}. Vui lòng phân loại đúng Cây Danh Mục.`);
+  }
+  if (txData.tx_date && isNaN(Date.parse(txData.tx_date))) {
+    throw new Error("Ngày giao dịch (tx_date) không hợp lệ.");
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const { txData } = await req.json();
+    
+    // Server-side validation
+    validateTx(txData);
+    
+    // Lưu vào bảng transactions
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert([txData])
+      .select('id')
+      .single();
+
+    if (error) throw error;
+    
+    return NextResponse.json({ success: true, txId: data.id });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const txId = searchParams.get('txId');
+    
+    if (!txId) {
+      // Xóa giao dịch gần nhất (fallback bằng text "Undo")
+      const { data: latest, error: fetchErr } = await supabase
+        .from('transactions')
+        .select('id')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
+      if (fetchErr) throw fetchErr;
+      
+      const { error: delErr } = await supabase.from('transactions').delete().eq('id', latest.id);
+      if (delErr) throw delErr;
+      
+      return NextResponse.json({ success: true, message: 'Đã hoàn tác giao dịch cuối.' });
+    } else {
+      // Xóa theo ID cụ thể
+      const { error } = await supabase.from('transactions').delete().eq('id', txId);
+      if (error) throw error;
+      
+      return NextResponse.json({ success: true, message: 'Đã hoàn tác giao dịch.' });
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+
+
+================================================================
+FILE: src\app\api\auth\route.ts
+================================================================
+import { NextResponse } from 'next/server';
+
+export async function POST(req: Request) {
+  try {
+    const { passHash } = await req.json();
+
+    const validHash = process.env.PASSPHRASE_HASH;
+    
+    if (!validHash) {
+      return NextResponse.json({ error: 'Server chưa cài đặt biến PASSPHRASE_HASH' }, { status: 500 });
+    }
+
+    if (passHash === validHash) {
+      // Set cookie
+      const response = NextResponse.json({ success: true });
+      response.cookies.set({
+        name: 'auth_token',
+        value: passHash,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 365, // 1 year
+      });
+      return response;
+    } else {
+      return NextResponse.json({ error: 'Mật khẩu sai!' }, { status: 401 });
+    }
+  } catch (err) {
+    return NextResponse.json({ error: 'Lỗi xác thực' }, { status: 500 });
+  }
+}
+
+
+
+================================================================
+FILE: src\app\api\run-tests\route.ts
+================================================================
+import { NextResponse } from 'next/server';
+import { routeIntent } from '@/lib/agents/Router';
+import { processStandard } from '@/lib/agents/Standard';
+import { processDebt } from '@/lib/agents/Debt';
+
+export async function GET() {
+  const results = [];
+  let passed = 0;
+  let total = 0;
+
+  function assert(condition: boolean, msg: string) {
+    total++;
+    results.push({ status: condition ? 'PASS' : 'FAIL', msg });
+    if (condition) passed++;
+  }
+
+  try {
+    // [R] Router Tests
+    let r1 = await routeIntent("Mua gạo 100k");
+    assert(r1.intent === 'Standard', 'Router: "Mua gạo 100k" -> intent: Standard');
+
+    let r2 = await routeIntent("Vay Nam 5tr");
+    assert(r2.intent === 'Debt' && r2.sub_type === 'Borrow', 'Router: "Vay Nam 5tr" -> intent: Debt, sub_type: Borrow');
+
+    let r3 = await routeIntent("Tổng chi hôm nay");
+    assert(r3.intent === 'Query' && r3.query_type === 'metric', 'Router: "Tổng chi hôm nay" -> intent: Query, query_type: metric');
+
+    let r4 = await routeIntent("chuyển 50k");
+    assert(r4.intent === 'Unclear', 'Router: "chuyển 50k" -> intent: Unclear');
+
+    // [S] Standard Tests
+    let s1 = await processStandard("Tiền điện 500k");
+    assert(s1.so_tien === 500000 && s1.phan_loai === 'Chi phí', 'Standard: "Tiền điện 500k" -> 500k, Chi phí');
+
+    let s2 = await processStandard("Lương tháng này 20 củ");
+    assert(s2.so_tien === 20000000 && s2.phan_loai === 'Thu nhập', 'Standard: "Lương tháng này 20 củ" -> 20tr, Thu nhập');
+
+    let s3 = await processStandard("Rút tiết kiệm 5tr");
+    assert(s3.so_tien === -5000000 && s3.phan_loai === 'Tiết kiệm', 'Standard: "Rút tiết kiệm 5tr" -> -5tr, Tiết kiệm');
+
+    let s4 = await processStandard("Mua cổ phiếu VNM 10 củ");
+    assert(s4.so_tien === 10000000 && s4.phan_loai === 'Đầu tư (Vốn)', 'Standard: "Mua cổ phiếu VNM 10 củ" -> 10tr, Đầu tư (Vốn)');
+
+    // [D] Debt Tests
+    let d1 = await processDebt("Vay Tùng 200k", "Borrow");
+    assert(d1.ma_bp?.toLowerCase() === 'tùng' && d1.so_tien === 200000 && d1.sub_type === 'Borrow', 'Debt: "Vay Tùng 200k" -> Tùng, 200k, Borrow');
+
+    let d2 = await processDebt("Tùng trả nợ 100k", "CollectPrincipal");
+    assert(d2.ma_bp?.toLowerCase() === 'tùng' && d2.so_tien === 100000 && d2.sub_type === 'CollectPrincipal', 'Debt: "Tùng trả nợ 100k" -> Tùng, 100k, CollectPrincipal');
+
+    let d3 = await processDebt("Vay 500k", "Borrow");
+    assert((d3 as any).error === 'MissingPartner', 'Debt: "Vay 500k" -> Lỗi MissingPartner');
+
+    return NextResponse.json({
+      success: passed === total,
+      score: `${passed}/${total}`,
+      results
+    });
+  } catch (error: any) {
+    return NextResponse.json({
+      success: false,
+      error: error.message,
+      results
+    }, { status: 500 });
+  }
+}
+
+
+
+================================================================
+FILE: src\lib\agents\Router.ts
+================================================================
+import { RouterResponse, MessageContext } from './types';
+
+// Danh sách các key Groq (Xoay vòng để chống rate limit)
+const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2].filter(Boolean) as string[];
+let currentGroqIndex = 0;
+
+function getNextGroqKey() {
+  if (GROQ_KEYS.length === 0) throw new Error('Missing GROQ_KEY');
+  const key = GROQ_KEYS[currentGroqIndex];
+  currentGroqIndex = (currentGroqIndex + 1) % GROQ_KEYS.length;
+  return key;
+}
+
+export async function routeIntent(message: string, contextHistory: MessageContext[] = []): Promise<RouterResponse> {
+  const apiKey = getNextGroqKey();
+  
+  // Format context history
+  const contextText = contextHistory.length > 0 
+    ? `\nLịch sử trò chuyện gần đây:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `
+Bạn là Agent_Router trong hệ thống Quản lý tài chính cá nhân. Nhiệm vụ duy nhất của bạn là GÁN NHÃN (Label) cho tin nhắn mới nhất của người dùng.
+
+PHÂN LOẠI NHÃN (Chỉ được chọn 1 trong 4):
+1. "Standard": Mọi giao dịch tiền tệ (Thu nhập, Chi phí, Tiết kiệm, Đầu tư) KHÔNG liên quan đến Nợ.
+2. "Debt": Các giao dịch liên quan đến Công nợ (Vay, Cho vay, Trả nợ gốc, Thu nợ gốc, Trả lãi, Thu lãi).
+3. "Query": Các câu hỏi tra cứu (tổng chi, số dư nợ, báo cáo ngày).
+4. "Unclear": Các câu nói mơ hồ, không rõ là vay hay chi tiêu, hoặc không đủ thông tin để đoán. KHÔNG ĐƯỢC ĐOÁN BỪA.
+
+HƯỚNG DẪN ĐỐI VỚI LABEL "Debt":
+Bạn phải trả kèm "sub_type" là một trong 6 giá trị: Borrow (mình đi vay), Lend (mình cho vay), RepayPrincipal (mình trả nợ gốc), CollectPrincipal (người ta trả nợ gốc cho mình), RepayInterest (mình trả tiền lãi), CollectInterest (mình thu tiền lãi).
+Lưu ý: "Nợ [Tên]" hoặc "Mượn [Tên]" -> Borrow. "Cho [Tên] nợ" hoặc "Cho vay" -> Lend.
+
+HƯỚNG DẪN ĐỐI VỚI LABEL "Query":
+Bạn phải bóc tách tham số truy vấn:
+- Nếu hỏi nợ: "query_type": "debt", "person": "Tên người".
+- Nếu hỏi ngày cụ thể: "query_type": "daily", "date": "today" | "yesterday" | "YYYY-MM-DD"
+- Nếu hỏi khoảng thời gian: "query_type": "metric", "period": "this_week" | "this_month" | "last_month"
+
+HƯỚNG DẪN ĐỐI VỚI LABEL "Unclear":
+Bạn phải trả kèm "message" là một câu hỏi ngắn gọn gọn để hỏi lại người dùng cho rõ ràng. 
+CHÚ Ý QUAN TRỌNG: Hãy đọc kỹ "Lịch sử trò chuyện gần đây" (nếu có). Nếu Bot vừa hỏi lại và User vừa trả lời bổ sung thông tin (ví dụ Bot hỏi: "Tiêu dùng hay trả nợ?", User đáp: "Tiêu dùng"), thì bạn bắt buộc kết hợp lịch sử và câu mới để chốt Nhãn luôn (Standard hoặc Debt). TUYỆT ĐỐI KHÔNG ĐƯỢC trả Unclear lần 2 gây lặp vô tận.
+
+VÍ DỤ:
+- User: "Ăn phở 50k" -> {"intent": "Standard"}
+- User: "Lương tháng 6: 15 triệu" -> {"intent": "Standard"}
+- User: "Gửi tiết kiệm 10 triệu" -> {"intent": "Standard"}
+- User: "Vay Tùng 2 củ" -> {"intent": "Debt", "sub_type": "Borrow"}
+- User: "Cho Sacombank vay 5 triệu" -> {"intent": "Debt", "sub_type": "Lend"}
+- User: "Trả Bình 500k" -> {"intent": "Debt", "sub_type": "RepayPrincipal"}
+- User: "Nam đưa tao 3 triệu" -> {"intent": "Debt", "sub_type": "CollectPrincipal"}
+- User: "Trả lãi cho Tùng 200k" -> {"intent": "Debt", "sub_type": "RepayInterest"}
+- User: "Chuyển 500k" -> {"intent": "Unclear", "message": "Sếp chuyển 500k này cho việc gì ạ? Tiêu dùng hay trả nợ?"}
+- User: "Nợ Tùng bao nhiêu" -> {"intent": "Query", "query_type": "debt", "person": "Tùng"}
+- User: "Tổng chi tháng này" -> {"intent": "Query", "query_type": "metric", "period": "this_month"}
+
+ĐẦU VÀO MỚI NHẤT TỪ USER: "${message}"${contextText}
+
+TRẢ VỀ DUY NHẤT 1 CHUỖI JSON ĐÚNG ĐỊNH DẠNG. KHÔNG GIẢI THÍCH GÌ THÊM.`;
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) {
+      throw new Error("Hệ thống AI đang quá tải (Groq), vui lòng thử lại sau.");
+    }
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as RouterResponse;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Router).");
+    }
+  } catch (error: any) {
+    console.error("Router Error:", error);
+    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+      throw error;
+    }
+    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
+  }
+}
+
+
+
+================================================================
+FILE: src\lib\agents\Standard.ts
+================================================================
+import { StandardResult, MessageContext } from './types';
+
+const DEEPSEEK_KEYS = [process.env.DEEPSEEK_KEY_1, process.env.DEEPSEEK_KEY_2].filter(Boolean) as string[];
+let currentDeepseekIndex = 0;
+
+function getNextDeepseekKey() {
+  if (DEEPSEEK_KEYS.length === 0) throw new Error('Missing DEEPSEEK_KEY');
+  const key = DEEPSEEK_KEYS[currentDeepseekIndex];
+  currentDeepseekIndex = (currentDeepseekIndex + 1) % DEEPSEEK_KEYS.length;
+  return key;
+}
+
+export async function processStandard(message: string, contextHistory: MessageContext[] = []): Promise<StandardResult> {
+  const apiKey = getNextDeepseekKey();
+  
+  const contextText = contextHistory.length > 0 
+    ? `\nLịch sử trò chuyện gần đây:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `Bạn là Agent_Standard chuyên bóc tách giao dịch tài chính chung (Thu nhập, Chi phí, Tiết kiệm, Đầu tư).
+GIAO DỊCH NÀY KHÔNG PHẢI LÀ CÔNG NỢ (VAY/TRẢ).
+
+BẢNG QUY ĐỔI SỐ TIỀN (Slang):
+- k, nghìn, ngàn, cành, ca -> x 1.000 (Ví dụ: 5 ca = 5000)
+- xị, lít -> x 100.000 (Ví dụ: 3 xị = 300000)
+- tr, triệu, chai, củ, cu -> x 1.000.000 (Ví dụ: 2 củ = 2000000)
+- chục (đứng một mình) -> x 10.000 (Ví dụ: 5 chục = 50000)
+- chục củ/triệu -> x 10.000.000 (Ví dụ: 2 chục củ = 20000000)
+
+QUY TẮC BÓC TÁCH:
+- phan_loai: Chỉ được chọn 1 trong: "Chi phí", "Thu nhập", "Đầu tư (Vốn)", "Đầu tư (Thị giá)", "Tiết kiệm".
+  * LƯU Ý ĐẦU TƯ: Nếu là tiền vốn bỏ ra -> phan_loai="Đầu tư (Vốn)". Nếu là báo giá trị thị trường -> phan_loai="Đầu tư (Thị giá)". Cả 2 trường hợp này bắt buộc lv1="Đầu tư".
+- lv1, lv2: Tự phân loại theo logic kế toán thông thường. Mọi giao dịch phải map vào cây danh mục chuẩn.
+- so_tien: Bắt buộc là SỐ NGUYÊN (Integer). 
+  * Lưu ý đặc biệt: Nếu là "Rút tiết kiệm", số tiền phải là SỐ ÂM (ví dụ: -5000000). Các trường hợp khác để số dương.
+- ghi_chu: Giữ nguyên văn hoặc tóm tắt ngắn gọn.
+- ngay: Trả về YYYY-MM-DD. Nếu không nhắc thời gian thì dùng ngày hôm nay. (Hôm nay là: ${new Date().toISOString().split('T')[0]})
+- Nếu không chắc chắn về danh mục, set "danh_muc_confidence": "thap" và liệt kê "alternatives": ["Gợi ý 1", "Gợi ý 2"].
+
+ĐẦU VÀO TỪ USER: "${message}"${contextText}
+
+TRẢ VỀ DUY NHẤT 1 CHUỖI JSON THEO CẤU TRÚC:
+{
+  "phan_loai": "Chi phí",
+  "lv1": "Ăn uống",
+  "lv2": "Ăn sáng",
+  "so_tien": 50000,
+  "ghi_chu": "Ăn phở",
+  "ngay": "2026-06-05",
+  "danh_muc_confidence": "cao"
+}`;
+
+  try {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) throw new Error("Hệ thống AI đang quá tải (DeepSeek), vui lòng thử lại sau.");
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as StandardResult;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Standard).");
+    }
+  } catch (error: any) {
+    console.error("Standard Error:", error);
+    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+      throw error;
+    }
+    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
+  }
+}
+
+
+
+================================================================
+FILE: src\lib\agents\Debt.ts
+================================================================
+import { DebtResult, DebtSubType, MessageContext } from './types';
+
+const DEEPSEEK_KEYS = [process.env.DEEPSEEK_KEY_1, process.env.DEEPSEEK_KEY_2].filter(Boolean) as string[];
+let currentDeepseekIndex = 0;
+
+function getNextDeepseekKey() {
+  if (DEEPSEEK_KEYS.length === 0) throw new Error('Missing DEEPSEEK_KEY');
+  const key = DEEPSEEK_KEYS[currentDeepseekIndex];
+  currentDeepseekIndex = (currentDeepseekIndex + 1) % DEEPSEEK_KEYS.length;
+  return key;
+}
+
+export async function processDebt(message: string, sub_type: DebtSubType, contextHistory: MessageContext[] = []): Promise<DebtResult> {
+  const apiKey = getNextDeepseekKey();
+  
+  const contextText = contextHistory.length > 0 
+    ? `\nLịch sử trò chuyện gần đây:\n` + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n')
+    : '';
+
+  const prompt = `Bạn là Agent_Debt chuyên bóc tách giao dịch CÔNG NỢ (Gốc và Lãi).
+Loại giao dịch hiện tại đã được Router xác định là: ${sub_type}
+Ý nghĩa:
+- Borrow: Mình đi vay.
+- Lend: Mình cho vay.
+- RepayPrincipal: Mình trả nợ gốc.
+- CollectPrincipal: Thu nợ gốc.
+- RepayInterest: Trả tiền lãi.
+- CollectInterest: Thu tiền lãi.
+
+BẢNG QUY ĐỔI SỐ TIỀN (Slang):
+- k, nghìn, ngàn, cành, ca -> x 1.000 (Ví dụ: 5 ca = 5000)
+- xị, lít -> x 100.000 (Ví dụ: 3 xị = 300000)
+- tr, triệu, chai, củ, cu -> x 1.000.000 (Ví dụ: 2 củ = 2000000)
+- chục (đứng một mình) -> x 10.000 (Ví dụ: 5 chục = 50000)
+- chục củ/triệu -> x 10.000.000 (Ví dụ: 2 chục củ = 20000000)
+
+QUY TẮC BÓC TÁCH:
+- ma_bp: Bắt buộc phải trích xuất được TÊN NGƯỜI / TỔ CHỨC. Nếu KHÔNG tìm thấy tên, trả về JSON với key "error": "MissingPartner". TUYỆT ĐỐI KHÔNG trả "ma_bp": "" hoặc "-".
+- so_tien: Bắt buộc là SỐ NGUYÊN (Integer). Nếu không tìm thấy số tiền, trả về JSON với key "error": "MissingAmount".
+- ghi_chu: Giữ nguyên văn hoặc tóm tắt ngắn.
+- ngay: Trả về YYYY-MM-DD. (Hôm nay là: ${new Date().toISOString().split('T')[0]})
+
+ĐẦU VÀO TỪ USER: "${message}"${contextText}
+
+TRẢ VỀ DUY NHẤT 1 CHUỖI JSON THEO CẤU TRÚC:
+{
+  "sub_type": "${sub_type}",
+  "ma_bp": "Tùng",
+  "so_tien": 500000,
+  "ghi_chu": "Vay tiền",
+  "ngay": "2026-06-05"
+}
+
+HOẶC NẾU LỖI:
+{
+  "error": "MissingPartner"
+}`;
+
+  try {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!res.ok) throw new Error("Hệ thống AI đang quá tải (DeepSeek), vui lòng thử lại sau.");
+
+    const data = await res.json();
+    try {
+      return JSON.parse(data.choices[0].message.content) as DebtResult;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Debt).");
+    }
+  } catch (error: any) {
+    console.error("Debt Error:", error);
+    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+      throw error;
+    }
+    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
+  }
+}
+
+
+

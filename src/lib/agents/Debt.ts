@@ -71,12 +71,20 @@ HOẶC NẾU LỖI:
       })
     });
 
-    if (!res.ok) throw new Error(`DeepSeek API error: ${res.statusText}`);
+    if (!res.ok) throw new Error("Hệ thống AI đang quá tải (DeepSeek), vui lòng thử lại sau.");
 
     const data = await res.json();
-    return JSON.parse(data.choices[0].message.content) as DebtResult;
-  } catch (error) {
+    try {
+      return JSON.parse(data.choices[0].message.content) as DebtResult;
+    } catch (parseError) {
+      console.error("JSON Parse Error:", parseError);
+      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Debt).");
+    }
+  } catch (error: any) {
     console.error("Debt Error:", error);
-    throw new Error("Failed to process debt transaction");
+    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+      throw error;
+    }
+    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
   }
 }

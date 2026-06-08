@@ -28,9 +28,12 @@ export async function POST(req: Request) {
 
     if (routerParams.intent === 'Query') {
       const result = await processQuery(routerParams);
+      if (result.error) {
+        return NextResponse.json({ action: 'MESSAGE', message: result.error });
+      }
       return NextResponse.json({ 
-        action: 'QUERY', 
-        message: result 
+        action: 'REPORT', 
+        data: result 
       });
     }
 
