@@ -68,6 +68,10 @@ export default function ChatPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }), signal: controller.signal,
       });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`API Lỗi ${res.status}: ${errText.slice(0, 200)}`);
+      }
       if (!res.body) throw new Error("No stream body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -83,7 +87,14 @@ export default function ChatPage() {
           if (!line.startsWith("data:")) continue;
           const json = line.slice(5).trim();
           if (!json) continue;
-          try { handleEvent(JSON.parse(json) as StreamEvent); } catch { /* ignore malformed */ }
+          try { 
+            const evt = JSON.parse(json) as StreamEvent; 
+            if (evt.type === "error") throw new Error(evt.message);
+            handleEvent(evt); 
+          } catch (e) { 
+            if (e instanceof SyntaxError) continue;
+            throw e;
+          }
         }
       }
     } catch (err) {
