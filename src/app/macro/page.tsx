@@ -14,7 +14,7 @@ export default async function MacroDashboard() {
     .from('market_data')
     .select('*')
     .order('recorded_at', { ascending: false })
-    .limit(10);
+    .limit(50);
 
   if (error) {
     console.error("Lỗi lấy dữ liệu:", error);
