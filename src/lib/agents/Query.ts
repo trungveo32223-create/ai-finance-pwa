@@ -169,7 +169,7 @@ export async function processQuery(params: RouterResponse): Promise<any> {
       if (p === "Thu nhập" || s === "CollectInterest") thu += tien;
       else if (p === "Chi phí" || s === "RepayInterest") chi += tien;
       else if (p === "Tiết kiệm") tietKiem += tien;
-      else if (p === "Đầu tư" || p === "Đầu tư (Vốn)") dauTu += tien;
+      else if (p === "Đầu tư" || p === "Đầu tư (Vốn)" || p === "Đầu tư (Thị giá)") dauTu += tien;
     }
 
     return {

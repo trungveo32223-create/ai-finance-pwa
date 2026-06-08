@@ -87,13 +87,9 @@ export async function fetchFredIndicator(seriesId: string, units: string = "lin"
     const obsDate = new Date(latestObservation.date);
     const diffHours = (now.getTime() - obsDate.getTime()) / (1000 * 60 * 60);
 
-    if (seriesId === "T10Y2Y") {
-      staleCheck = diffHours > 72; // Cuối tuần không có giao dịch, nên để 72h thay vì 24h
-    } else if (seriesId === "M2SL") {
-      staleCheck = diffHours > 1000; // M2 công bố trễ khoảng 1 tháng
-    } else if (seriesId === "SAHMREALTIME") {
-      staleCheck = diffHours > 1000; // Sahm rule công bố theo tháng
-    }
+    const DAILY = ["T10Y2Y","BAMLH0A0HYM2","DGS10","DGS2","DTWEXBGS","RRPONTSYD"];
+    const staleLimit = DAILY.includes(seriesId) ? 96 : 1100; // 96h (4 ngày) cho Daily, 1100h (45 ngày) cho Monthly
+    staleCheck = diffHours > staleLimit;
 
     return {
       indicator_key: seriesId,

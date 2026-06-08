@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, Schema } from '@google/generative-ai';
 import { z } from 'zod';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY_1 || '');
@@ -13,7 +13,7 @@ export const NewsAnalysisZodSchema = z.object({
 export type NewsAnalysisResult = z.infer<typeof NewsAnalysisZodSchema>;
 
 // Định nghĩa Schema bằng chuẩn Type của Google GenAI để ép mô hình trả về đúng cấu trúc
-const responseSchema = {
+const responseSchema: Schema = {
   type: SchemaType.OBJECT,
   properties: {
     sentiment: {

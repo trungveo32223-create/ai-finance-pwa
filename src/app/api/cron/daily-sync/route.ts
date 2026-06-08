@@ -36,6 +36,8 @@ export async function GET(request: Request) {
   const allNews = [...vneNews, ...cafefNews];
   
   const processedNews: any[] = [];
+  
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
   // 2. Chạy Gemini bóc tách từng tin
   for (const item of allNews) {
@@ -50,6 +52,7 @@ export async function GET(request: Request) {
       continue; // Đã cào và phân tích rồi thì bỏ qua
     }
 
+    await sleep(500); // Delay 500ms để tránh Gemini Rate Limit 15 RPM
     const aiAnalysis = await extractNewsLogicWithGemini(item.title, item.raw_content);
     
     if (aiAnalysis) {
