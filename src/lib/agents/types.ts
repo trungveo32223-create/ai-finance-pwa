@@ -1,4 +1,4 @@
-export type IntentLabel = 'Standard' | 'Debt' | 'Query' | 'Unclear' | 'Valuation';
+export type IntentLabel = 'Standard' | 'Debt' | 'Query' | 'Unclear' | 'Valuation' | 'Macro';
 
 export type DebtSubType = 
   | 'Borrow' 
@@ -17,6 +17,7 @@ export interface RouterResponse {
   period?: 'this_week' | 'this_month' | 'last_month' | 'last_n_days'; // Only for Query type metric
   n?: number; // Only for Query type metric when last_n_days
   message?: string; // Only for Unclear
+  ticker?: string | null; // Only for Macro
 }
 
 export interface StandardResult {

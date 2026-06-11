@@ -1,4 +1,5 @@
 import { RouterResponse, MessageContext } from './types';
+import { extractVN30Ticker } from './council/ticker';
 
 // Danh sách các key Groq (Xoay vòng để chống rate limit)
 const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2].filter(Boolean) as string[];
@@ -12,6 +13,9 @@ function getNextGroqKey() {
 }
 
 export async function routeIntent(message: string, contextHistory: MessageContext[] = []): Promise<RouterResponse> {
+  // 1. CHẠY REGEX TRƯỚC LLM CALL (L9, Sprint 1.7)
+  const tickerMatched = extractVN30Ticker(message);
+  
   const apiKey = getNextGroqKey();
   
   // Format context history
@@ -22,11 +26,12 @@ export async function routeIntent(message: string, contextHistory: MessageContex
   const prompt = `
 Bạn là Agent_Router trong hệ thống Quản lý tài chính cá nhân. Nhiệm vụ duy nhất của bạn là GÁN NHÃN (Label) cho tin nhắn mới nhất của người dùng.
 
-PHÂN LOẠI NHÃN (Chỉ được chọn 1 trong 4):
+PHÂN LOẠI NHÃN (Chỉ được chọn 1 trong 5):
 1. "Standard": Mọi giao dịch tiền tệ (Thu nhập, Chi phí, Tiết kiệm, Đầu tư) KHÔNG liên quan đến Nợ.
 2. "Debt": Các giao dịch liên quan đến Công nợ (Vay, Cho vay, Trả nợ gốc, Thu nợ gốc, Trả lãi, Thu lãi).
-3. "Query": Các câu hỏi tra cứu (tổng chi, số dư nợ, báo cáo ngày).
-4. "Unclear": Các câu nói mơ hồ, không rõ là vay hay chi tiêu, hoặc không đủ thông tin để đoán. KHÔNG ĐƯỢC ĐOÁN BỪA.
+3. "Query": Các câu hỏi tra cứu số dư cá nhân (tổng chi, số dư nợ, báo cáo ngày).
+4. "Macro": Các câu hỏi nhờ tư vấn đầu tư, phân tích thị trường, mã cổ phiếu, chứng khoán, vĩ mô.
+5. "Unclear": Các câu nói mơ hồ, không rõ là vay hay chi tiêu. KHÔNG ĐƯỢC ĐOÁN BỪA.
 
 HƯỚNG DẪN ĐỐI VỚI LABEL "Debt":
 Bạn phải trả kèm "sub_type" là một trong 6 giá trị: Borrow (mình đi vay), Lend (mình cho vay), RepayPrincipal (mình trả nợ gốc), CollectPrincipal (người ta trả nợ gốc cho mình), RepayInterest (mình trả tiền lãi), CollectInterest (mình thu tiền lãi).
@@ -38,22 +43,20 @@ Bạn phải bóc tách tham số truy vấn:
 - Nếu hỏi ngày cụ thể: "query_type": "daily", "date": "today" | "yesterday" | "YYYY-MM-DD"
 - Nếu hỏi khoảng thời gian: "query_type": "metric", "period": "this_week" | "this_month" | "last_month"
 
+HƯỚNG DẪN ĐỐI VỚI LABEL "Macro":
+Bạn phải trả kèm "ticker" nếu user hỏi về 1 mã cụ thể. Nếu không, ticker là null.
+(Gợi ý hệ thống: Mã VN30 đã được nhận diện trước: ${tickerMatched || "Không có"})
+
 HƯỚNG DẪN ĐỐI VỚI LABEL "Unclear":
 Bạn phải trả kèm "message" là một câu hỏi ngắn gọn gọn để hỏi lại người dùng cho rõ ràng. 
-CHÚ Ý QUAN TRỌNG: Hãy đọc kỹ "Lịch sử trò chuyện gần đây" (nếu có). Nếu Bot vừa hỏi lại và User vừa trả lời bổ sung thông tin (ví dụ Bot hỏi: "Tiêu dùng hay trả nợ?", User đáp: "Tiêu dùng"), thì bạn bắt buộc kết hợp lịch sử và câu mới để chốt Nhãn luôn (Standard hoặc Debt). TUYỆT ĐỐI KHÔNG ĐƯỢC trả Unclear lần 2 gây lặp vô tận.
+CHÚ Ý QUAN TRỌNG: Hãy đọc kỹ "Lịch sử trò chuyện gần đây" (nếu có).
 
 VÍ DỤ:
 - User: "Ăn phở 50k" -> {"intent": "Standard"}
-- User: "Lương tháng 6: 15 triệu" -> {"intent": "Standard"}
-- User: "Gửi tiết kiệm 10 triệu" -> {"intent": "Standard"}
 - User: "Vay Tùng 2 củ" -> {"intent": "Debt", "sub_type": "Borrow"}
-- User: "Cho Sacombank vay 5 triệu" -> {"intent": "Debt", "sub_type": "Lend"}
-- User: "Trả Bình 500k" -> {"intent": "Debt", "sub_type": "RepayPrincipal"}
-- User: "Nam đưa tao 3 triệu" -> {"intent": "Debt", "sub_type": "CollectPrincipal"}
-- User: "Trả lãi cho Tùng 200k" -> {"intent": "Debt", "sub_type": "RepayInterest"}
-- User: "Chuyển 500k" -> {"intent": "Unclear", "message": "Sếp chuyển 500k này cho việc gì ạ? Tiêu dùng hay trả nợ?"}
-- User: "Nợ Tùng bao nhiêu" -> {"intent": "Query", "query_type": "debt", "person": "Tùng"}
 - User: "Tổng chi tháng này" -> {"intent": "Query", "query_type": "metric", "period": "this_month"}
+- User: "Đánh giá FPT" -> {"intent": "Macro", "ticker": "FPT"}
+- User: "Thị trường hnay thế nào" -> {"intent": "Macro", "ticker": null}
 
 ĐẦU VÀO MỚI NHẤT TỪ USER: "${message}"${contextText}
 
