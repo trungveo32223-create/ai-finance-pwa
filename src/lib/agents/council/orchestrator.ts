@@ -168,8 +168,14 @@ Please output strict JSON according to the schema.`;
   } catch (err) {
     console.error("Monitor Error:", err);
     // Fallback nếu Monitor sụp đổ
+    let failDebug = "";
+    if (process.env.NODE_ENV !== "production" && failures.length > 0) {
+      failDebug = `\n[DEBUG] ${failures.map(f => `${f.name}: ${f.error}`).join(" | ")}`;
+      console.error("[DEBUG FAILURES]", failDebug);
+    }
+    
     structuredVerdict = {
-      verdict: "Hệ thống AI hiện đang bảo trì hoặc thiếu dữ liệu, vui lòng giữ nguyên tỷ trọng phòng thủ. Đây là thông tin phân tích, không phải tư vấn đầu tư.",
+      verdict: "Hội đồng cố vấn hiện không khả dụng. Mặc định giữ thế phòng thủ: tránh mở vị thế rủi ro mới, bảo toàn vốn, và thử lại sau." + failDebug,
       traffic_light: "YELLOW",
       confidence: 0,
       three_answers: {
