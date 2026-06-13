@@ -6,6 +6,11 @@ const GROQ_KEYS = [
   (process.env.GROQ_KEY_1 ?? "").trim(),
   (process.env.GROQ_KEY_2 ?? "").trim(),
   (process.env.GROQ_KEY_3 ?? "").trim(),
+  (process.env.GROQ_KEY_4 ?? "").trim(),
+  (process.env.GROQ_KEY_5 ?? "").trim(),
+  (process.env.GROQ_KEY_6 ?? "").trim(),
+  (process.env.GROQ_KEY_7 ?? "").trim(),
+  (process.env.GROQ_KEY_8 ?? "").trim(),
   (process.env.GROQ_API_KEY ?? "").trim()
 ].filter(Boolean);
 
