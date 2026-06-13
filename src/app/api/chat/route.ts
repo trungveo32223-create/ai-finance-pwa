@@ -5,6 +5,9 @@ import { runCouncilDebate } from "@/lib/agents/council/orchestrator";
 import { buildContext } from "@/lib/agents/council/context_builder";
 import { generateCacheHash, getCachedVerdict, setCachedVerdict } from "@/lib/agents/council/cache";
 import { extractVN30Ticker } from "@/lib/agents/council/ticker";
+import { processStandard } from "@/lib/agents/Standard";
+import { processDebt } from "@/lib/agents/Debt";
+import { processQuery } from "@/lib/agents/Query";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -31,20 +34,32 @@ export async function POST(req: NextRequest): Promise<Response> {
   // 1. CHẠY ROUTER (V2)
   const routerResponse = await routeIntent(message, body.history || []);
 
-  // Nhánh 1: Ghi sổ (Standard/Debt)
-  if (routerResponse.intent === "Standard" || routerResponse.intent === "Debt") {
+  // Nhánh 1: Ghi sổ (Standard)
+  if (routerResponse.intent === "Standard") {
+    const data = await processStandard(message, body.history || []);
     return NextResponse.json({
       action: 'CONFIRM_REQUIRED',
       type: routerResponse.intent,
-      data: routerResponse.data
+      data: data
+    });
+  }
+
+  // Nhánh 1.5: Ghi sổ (Debt)
+  if (routerResponse.intent === "Debt") {
+    const data = await processDebt(message, routerResponse.sub_type || "Borrow", body.history || []);
+    return NextResponse.json({
+      action: 'CONFIRM_REQUIRED',
+      type: routerResponse.intent,
+      data: data
     });
   }
 
   // Nhánh 2: Truy vấn
   if (routerResponse.intent === "Query") {
+    const data = await processQuery(routerResponse);
     return NextResponse.json({
       action: 'REPORT',
-      data: routerResponse.data
+      data: data
     });
   }
 
