@@ -80,7 +80,7 @@ export async function GET(request: Request) {
         console.error(`Supabase DB Error for ${seriesId}:`, error);
         results.push({ seriesId, status: 'failed', error: error.message });
       } else {
-        results.push({ seriesId, status: 'success', value: data.indicator_value, stale: data.is_stale });
+        results.push({ seriesId: finalKey, status: 'success', value: data.indicator_value, stale: data.is_stale });
       }
     } else {
       results.push({ seriesId, status: 'failed', error: 'fetch_or_validation_failed' });

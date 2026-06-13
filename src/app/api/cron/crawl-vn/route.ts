@@ -27,16 +27,15 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "No data fetched" }, { status: 500 });
     }
 
-    // Insert vào bảng market_data (upsert hoặc insert)
-    const { error } = await supabaseAdmin.from("market_data").upsert(
+    // Insert vào bảng market_data
+    const { error } = await supabaseAdmin.from("market_data").insert(
       vnData.map(d => ({
         indicator_key: d.indicator_key,
         indicator_value: d.indicator_value,
         recorded_at: d.recorded_at,
         is_stale: d.stale, 
         source: d.source,
-      })),
-      { onConflict: "indicator_key" }
+      }))
     );
 
     if (error) {
