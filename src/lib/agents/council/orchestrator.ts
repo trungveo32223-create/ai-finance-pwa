@@ -94,6 +94,36 @@ function serializeContext(query: string, ctx: CouncilContext, personaRequiredDat
   return parts.join("\n");
 }
 
+import { extractVN30Ticker } from "./ticker";
+
+// Hàm ngủ để backoff
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function callGroqWithRetry(
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  timeoutMs: number,
+  maxTokens: number,
+  isJson: boolean = false
+): Promise<string> {
+  let attempt = 0;
+  while (attempt < 2) {
+    try {
+      return await callGroq(apiKey, systemPrompt, userPrompt, timeoutMs, maxTokens, isJson);
+    } catch (err: any) {
+      if (err.message && err.message.includes("429") && attempt === 0) {
+        console.warn("[Groq] 429 Rate Limit, retrying in 2s...");
+        await sleep(2000);
+        attempt++;
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error("Groq failed after retry");
+}
+
 export async function runCouncilDebate(
   query: string,
   context: CouncilContext,
@@ -109,34 +139,66 @@ export async function runCouncilDebate(
     activePersonas = activePersonas.filter(p => defenseRoles.includes(p.id));
   }
 
-  // Chạy song song các chuyên gia
-  const settled = await Promise.allSettled(
-    activePersonas.map((persona) => {
-      const userPrompt = serializeContext(query, context, persona.requiredData);
-      return callGroq(groqKey, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
-        .then((opinion): ExpertOpinion => ({
-          id: persona.id,
-          name: persona.name,
-          opinion,
-        }));
-    })
-  );
-
+  const hasTicker = !!extractVN30Ticker(query);
   const opinions: ExpertOpinion[] = [];
   const failures: ExpertFailure[] = [];
 
-  settled.forEach((result, idx) => {
-    const expert = activePersonas[idx];
-    if (result.status === "fulfilled") {
-      opinions.push(result.value);
-    } else {
-      failures.push({
-        id: expert.id,
-        name: expert.name,
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
+  if (!hasTicker) {
+    // ==========================================
+    // FAST MODE: 1 LLM Call đóng n vai (Tránh nổ 429 TPM)
+    // ==========================================
+    console.log("[Council] Running FAST MODE (No ticker detected)");
+    const fastSystemPrompt = `Bạn là Hội đồng chuyên gia tài chính. Đóng vai các chuyên gia sau để nhận định thị trường.
+Mỗi chuyên gia chỉ dựa vào dữ liệu của họ. Trả về JSON chuẩn: { "opinions": [{ "id": "...", "name": "...", "opinion": "..." }] }
+Danh sách chuyên gia yêu cầu:
+${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n")}`;
+    
+    // Gộp tất cả required data cho user prompt
+    const allRequired = Array.from(new Set(activePersonas.flatMap(p => p.requiredData)));
+    const fastUserPrompt = serializeContext(query, context, allRequired);
+
+    try {
+      const fastJson = await callGroqWithRetry(groqKey, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
+      const parsed = JSON.parse(fastJson);
+      if (parsed.opinions && Array.isArray(parsed.opinions)) {
+        parsed.opinions.forEach((o: any) => {
+          opinions.push({ id: o.id, name: o.name, opinion: o.opinion });
+        });
+      }
+    } catch (err: any) {
+      console.error("[Council] Fast Mode failed:", err);
+      failures.push({ id: "system", name: "FastMode", error: err.message });
     }
-  });
+  } else {
+    // ==========================================
+    // FULL MODE: Chạy song song từng chuyên gia (Chỉ khi phân tích Cổ phiếu cụ thể)
+    // ==========================================
+    console.log("[Council] Running FULL MODE (Ticker detected)");
+    const settled = await Promise.allSettled(
+      activePersonas.map((persona) => {
+        const userPrompt = serializeContext(query, context, persona.requiredData);
+        return callGroqWithRetry(groqKey, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
+          .then((opinion): ExpertOpinion => ({
+            id: persona.id,
+            name: persona.name,
+            opinion,
+          }));
+      })
+    );
+
+    settled.forEach((result, idx) => {
+      const expert = activePersonas[idx];
+      if (result.status === "fulfilled") {
+        opinions.push(result.value);
+      } else {
+        failures.push({
+          id: expert.id,
+          name: expert.name,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      }
+    });
+  }
 
   // Gửi cho Monitor tổng hợp
   const monitorUserPrompt = `USER QUESTION: ${query}

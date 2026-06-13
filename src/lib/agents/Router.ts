@@ -2,7 +2,7 @@ import { RouterResponse, MessageContext } from './types';
 import { extractVN30Ticker } from './council/ticker';
 
 // Danh sách các key Groq (Xoay vòng để chống rate limit)
-const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2].filter(Boolean) as string[];
+const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2, process.env.GROQ_API_KEY].filter(Boolean) as string[];
 let currentGroqIndex = 0;
 
 function getNextGroqKey() {
@@ -13,7 +13,22 @@ function getNextGroqKey() {
 }
 
 export async function routeIntent(message: string, contextHistory: MessageContext[] = []): Promise<RouterResponse> {
-  // 1. CHẠY REGEX TRƯỚC LLM CALL (L9, Sprint 1.7)
+  // 1. HF-03: GUARD DETERMINISTIC TRƯỚC LLM (Chống LLM ảo giác đẩy ghi sổ sang Macro)
+  const lowerMsg = message.toLowerCase();
+  const moneyPattern = /\d+\s*(k|nghìn|triệu|tr|củ|tỷ|chỉ vàng|lượng)/i;
+  const questionPattern = /(\?|nên|thế nào|đánh giá|sao|không)/i;
+  
+  if (moneyPattern.test(lowerMsg) && !questionPattern.test(lowerMsg)) {
+    // Câu kể có số tiền -> 99% là ghi sổ. Bỏ qua gọi LLM.
+    console.log("[Router] Regex bắt được câu kể tiền bạc, ép vào Standard/Debt");
+    // Nhận diện vay nợ cơ bản
+    if (lowerMsg.includes("vay") || lowerMsg.includes("nợ")) {
+      return { intent: "Debt", sub_type: "Borrow" };
+    }
+    return { intent: "Standard" };
+  }
+
+  // 2. CHẠY REGEX TRƯỚC LLM CALL (L9, Sprint 1.7)
   const tickerMatched = extractVN30Ticker(message);
   
   const apiKey = getNextGroqKey();
@@ -62,37 +77,56 @@ VÍ DỤ:
 
 TRẢ VỀ DUY NHẤT 1 CHUỖI JSON ĐÚNG ĐỊNH DẠNG. KHÔNG GIẢI THÍCH GÌ THÊM.`;
 
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        response_format: { type: "json_object" }
-      })
-    });
-
-    if (!res.ok) {
-      throw new Error("Hệ thống AI đang quá tải (Groq), vui lòng thử lại sau.");
-    }
-
-    const data = await res.json();
+  let attempt = 0;
+  while (attempt < 2) {
     try {
-      return JSON.parse(data.choices[0].message.content) as RouterResponse;
-    } catch (parseError) {
-      console.error("JSON Parse Error:", parseError);
-      throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Router).");
+      const apiKey = getNextGroqKey();
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        if (res.status === 429 && attempt === 0) {
+          console.warn("[Router] Groq 429 Rate Limit, retrying in 2s...");
+          await new Promise(r => setTimeout(r, 2000));
+          attempt++;
+          continue;
+        }
+        console.error(`[Router] Groq Error ${res.status}:`, errText);
+        throw new Error(`Hệ thống AI đang quá tải (Groq HTTP ${res.status}), vui lòng thử lại sau.`);
+      }
+
+      const data = await res.json();
+      try {
+        return JSON.parse(data.choices[0].message.content) as RouterResponse;
+      } catch (parseError) {
+        console.error("JSON Parse Error:", parseError);
+        throw new Error("Dữ liệu AI trả về bị lỗi định dạng (Router).");
+      }
+    } catch (error: any) {
+      if (attempt === 0 && error.message && error.message.includes("429")) {
+        console.warn("[Router] Network Error (429), retrying...");
+        await new Promise(r => setTimeout(r, 2000));
+        attempt++;
+        continue;
+      }
+      console.error("Router Error:", error);
+      if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
+        throw error;
+      }
+      throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
     }
-  } catch (error: any) {
-    console.error("Router Error:", error);
-    if (error.message && (error.message.includes("Hệ thống AI") || error.message.includes("Dữ liệu AI"))) {
-      throw error;
-    }
-    throw new Error("Hệ thống AI đang quá tải, vui lòng thử lại sau.");
   }
+  throw new Error("Hệ thống AI đang quá tải sau nhiều lần thử, vui lòng thử lại sau.");
 }
