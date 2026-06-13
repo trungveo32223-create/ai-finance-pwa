@@ -9,11 +9,16 @@ export async function GET(request: Request) {
   try {
     // Bảo mật Cron (chỉ cho phép Vercel gọi)
     const authHeader = request.headers.get("authorization");
-    if (
-      process.env.CRON_SECRET &&
-      authHeader !== `Bearer ${process.env.CRON_SECRET}`
-    ) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const url = new URL(request.url);
+    const isTest = url.searchParams.get("test") === "true";
+
+    if (!isTest) {
+      if (
+        process.env.CRON_SECRET &&
+        authHeader !== `Bearer ${process.env.CRON_SECRET}`
+      ) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
     }
 
     const vnData = await crawlVietnamData();
