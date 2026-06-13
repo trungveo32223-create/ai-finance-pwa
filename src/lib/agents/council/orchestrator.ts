@@ -167,7 +167,7 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
       }
     } catch (err: any) {
       console.error("[Council] Fast Mode failed:", err);
-      failures.push({ id: "system", name: "FastMode", error: err.message });
+      failures.push({ id: "system" as any, name: "FastMode", error: err.message });
     }
   } else {
     // ==========================================
