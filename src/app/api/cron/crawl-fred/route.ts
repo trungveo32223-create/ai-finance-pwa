@@ -65,10 +65,11 @@ export async function GET(request: Request) {
       // Lưu ý: Chúng ta lưu indicator_key là DUY NHẤT cho lần lấy mới nhất, 
       // hoặc insert một record mới theo ngày. 
       // Để theo dõi biểu đồ lịch sử, ta dùng insert (không upsert).
+      const finalKey = data.indicator_key === 'DTWEXBGS' ? 'US_TRADE_WEIGHTED_USD' : data.indicator_key;
       const { error } = await supabase
         .from('market_data')
         .insert({
-          indicator_key: data.indicator_key,
+          indicator_key: finalKey,
           indicator_value: data.indicator_value,
           source: data.source,
           is_stale: data.is_stale,

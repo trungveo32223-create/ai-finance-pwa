@@ -98,7 +98,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
 
         send({ type: "phase", label: "Đang check 6 cổng Funnel..." });
-        const result = await runCouncilDebate(message, context);
+        const result = await runCouncilDebate(message, context, (progressMsg) => {
+          send({ type: "phase", label: progressMsg });
+        });
         
         if (!hasTicker) {
           await setCachedVerdict(cacheHash, message, result);

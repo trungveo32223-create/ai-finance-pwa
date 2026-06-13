@@ -87,12 +87,14 @@ function serializeContext(query: string, ctx: CouncilContext, personaRequiredDat
     parts.push(`CẢNH BÁO: BẠN BỊ THIẾU DỮ LIỆU BẮT BUỘC SAU: ${missingData.join(", ")}. BẠN PHẢI ABSTAIN (NO_DATA).`);
   }
 
-  parts.push(`FUNNEL REPORT SUMMARY:
-- Liquidity: ${ctx.funnelReport.liquidity.status} (Metrics: ${JSON.stringify(ctx.funnelReport.liquidity.metrics)})
-- Recession: ${ctx.funnelReport.recession.status} (Metrics: ${JSON.stringify(ctx.funnelReport.recession.metrics)})
-- Cycle: ${ctx.funnelReport.cycle.status} (Metrics: ${JSON.stringify(ctx.funnelReport.cycle.metrics)})
-- Policy VN: ${ctx.funnelReport.policy_vn.status} (Metrics: ${JSON.stringify(ctx.funnelReport.policy_vn.metrics)})
-- Micro/Allocation: ${ctx.funnelReport.micro_allocation.status} (${ctx.funnelReport.micro_allocation.reason})
+  parts.push(`FUNNEL REPORT SUMMARY (Đã qua xử lý Logic, hãy dùng diễn giải này thay vì tự đoán):
+- Liquidity: [${ctx.funnelReport.liquidity.status}] ${ctx.funnelReport.liquidity.interpretation || ""}
+- Recession: [${ctx.funnelReport.recession.status}] ${ctx.funnelReport.recession.interpretation || ""}
+- Cycle: [${ctx.funnelReport.cycle.status}] ${ctx.funnelReport.cycle.interpretation || ""}
+- FX & Capital: [${ctx.funnelReport.fx_capital.status}] ${ctx.funnelReport.fx_capital.interpretation || ""}
+- Valuation & Flow: [${ctx.funnelReport.valuation_flow.status}] ${ctx.funnelReport.valuation_flow.interpretation || ""}
+- Policy VN: [${ctx.funnelReport.policy_vn.status}] ${ctx.funnelReport.policy_vn.interpretation || ""}
+- Micro/Allocation: [${ctx.funnelReport.micro_allocation.status}] ${ctx.funnelReport.micro_allocation.interpretation || ""}
   `);
 
   return parts.join("\n");
@@ -133,7 +135,8 @@ import { getNextGroqKey } from "../Router";
 
 export async function runCouncilDebate(
   query: string,
-  context: CouncilContext
+  context: CouncilContext,
+  onProgress?: (msg: string) => void
 ): Promise<DebateResult> {
   console.log("=== [DIAGNOSIS HF-05] context.marketData ===", JSON.stringify(context.marketData, null, 2));
   console.log("=== [DIAGNOSIS HF-05] context.funnelReport ===", JSON.stringify(context.funnelReport, null, 2));
@@ -169,8 +172,10 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
     const fastUserPrompt = serializeContext(query, context, allRequired);
 
     try {
+      if (onProgress) onProgress("Đang gọi Fast Mode LLM...");
       const currentKey = getNextGroqKey();
       const fastJson = await callGroqWithRetry(currentKey, judgeModel, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 2000, true);
+      if (onProgress) onProgress("Đã nhận kết quả Fast Mode, đang parse JSON...");
       const parsed = JSON.parse(fastJson);
       if (parsed.opinions && Array.isArray(parsed.opinions)) {
         parsed.opinions.forEach((o: any) => {
@@ -191,11 +196,14 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
         const userPrompt = serializeContext(query, context, persona.requiredData);
         const currentKey = getNextGroqKey(); // Mỗi trong 7 call lấy 1 key xoay vòng
         return callGroqWithRetry(currentKey, expertModel, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
-          .then((opinion): ExpertOpinion => ({
-            id: persona.id,
-            name: persona.name,
-            opinion,
-          }));
+          .then((opinion): ExpertOpinion => {
+            if (onProgress) onProgress(`Chuyên gia ${persona.name} đã phân tích xong.`);
+            return {
+              id: persona.id,
+              name: persona.name,
+              opinion,
+            };
+          });
       })
     );
 
@@ -218,10 +226,14 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
 
   const monitorUserPrompt = `USER QUESTION: ${query}
 
-FUNNEL GATES STATUS & METRICS:
-- Liquidity: ${context.funnelReport.liquidity.status} (Metrics: ${JSON.stringify(context.funnelReport.liquidity.metrics)})
-- Recession: ${context.funnelReport.recession.status} (Metrics: ${JSON.stringify(context.funnelReport.recession.metrics)})
-- Allocation Constraint: ${context.funnelReport.micro_allocation.status} - ${context.funnelReport.micro_allocation.reason}
+FUNNEL GATES (Hãy tổng hợp từ những nhận định này, không tự bịa):
+- Liquidity: [${context.funnelReport.liquidity.status}] ${context.funnelReport.liquidity.interpretation}
+- Recession: [${context.funnelReport.recession.status}] ${context.funnelReport.recession.interpretation}
+- Cycle: [${context.funnelReport.cycle.status}] ${context.funnelReport.cycle.interpretation}
+- FX & Capital: [${context.funnelReport.fx_capital.status}] ${context.funnelReport.fx_capital.interpretation}
+- Valuation & Flow: [${context.funnelReport.valuation_flow.status}] ${context.funnelReport.valuation_flow.interpretation}
+- Policy VN: [${context.funnelReport.policy_vn.status}] ${context.funnelReport.policy_vn.interpretation}
+- Allocation: [${context.funnelReport.micro_allocation.status}] ${context.funnelReport.micro_allocation.interpretation}
 
 RAW MARKET DATA:
 ${rawMarketDataKeys}
@@ -237,8 +249,10 @@ Please output strict JSON according to the schema.`;
   let structuredVerdict: StructuredVerdict;
   
   try {
+    if (onProgress) onProgress("The Judge đang tổng hợp phán quyết cuối cùng...");
     const monitorKey = getNextGroqKey();
     rawJson = await callGroqWithRetry(monitorKey, judgeModel, MONITOR_PROMPT, monitorUserPrompt, DEFAULTS.judgeTimeoutMs, 800, true);
+    if (onProgress) onProgress("Đã nhận phán quyết từ Judge.");
     structuredVerdict = JSON.parse(rawJson);
     
     // Ép cứng Disclaimer (Luật L1 / Test S1-07)

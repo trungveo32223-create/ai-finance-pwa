@@ -43,6 +43,7 @@ export type TrafficLight = "GREEN" | "YELLOW" | "RED";
 export interface GateResult {
   status: TrafficLight;
   reason: string;
+  interpretation?: string; // Bổ sung theo chuẩn HF-06B
   metrics: Record<string, any>;
 }
 
@@ -51,6 +52,7 @@ export interface FunnelReport {
   recession: GateResult;
   cycle: GateResult;
   fx_capital: GateResult;
+  valuation_flow: GateResult; // Bổ sung
   policy_vn: GateResult;
   micro_allocation: GateResult;
 }
@@ -97,6 +99,7 @@ export interface StructuredVerdict {
   verdict: string;
   traffic_light: TrafficLight;
   confidence: number; // % confidence (0-100)
+  opinions?: { name: string; opinion: string }[];
   three_answers: ThreeAnswers;
   key_risk: string;
   dissenting_view: string;

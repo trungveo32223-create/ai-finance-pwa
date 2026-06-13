@@ -28,7 +28,7 @@ export async function GET(request: Request) {
         indicator_key: d.indicator_key,
         indicator_value: d.indicator_value,
         recorded_at: d.recorded_at,
-        stale: d.stale, // schema gốc dùng stale
+        is_stale: d.stale, 
         source: d.source,
       })),
       { onConflict: "indicator_key" }

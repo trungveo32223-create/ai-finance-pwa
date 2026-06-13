@@ -9,7 +9,7 @@ export const COUNCIL_ROSTER: PersonaDefinition[] = [
   {
     id: "banker",
     name: "Banker",
-    requiredData: ["US_M2SL", "VN_INTERBANK_ON"],
+    requiredData: ["M2SL", "VN_INTERBANK_ON"],
     systemPrompt: `Bạn là Banker. Phân tích thanh khoản, cung tiền, lãi suất liên ngân hàng.` + ABSTAIN_RULE + NO_PREDICT_RULE + CITE_DATA_RULE
   },
   {
@@ -21,13 +21,13 @@ export const COUNCIL_ROSTER: PersonaDefinition[] = [
   {
     id: "wealth_manager",
     name: "Wealth Manager",
-    requiredData: ["US_SAHMREALTIME", "VN_RISK_SCORE"],
+    requiredData: ["SAHMREALTIME", "VN_RISK_SCORE"],
     systemPrompt: `Bạn là Wealth Manager. Tập trung bảo vệ vốn, quản trị drawdown, đánh giá cấu trúc an toàn.` + ABSTAIN_RULE + NO_PREDICT_RULE + CITE_DATA_RULE
   },
   {
     id: "mogul",
     name: "Mogul",
-    requiredData: ["VN_INDEX", "VN30"],
+    requiredData: ["VN_INDEX", "VN_PE", "VN_FOREIGN_NET_FLOW"],
     systemPrompt: `Bạn là Mogul (Tài phiệt). Săn tài sản giá rẻ, đi theo dòng tiền lớn, đánh giá rủi ro và cơ hội đầu cơ.` + ABSTAIN_RULE + NO_PREDICT_RULE + CITE_DATA_RULE
   },
   {
@@ -45,7 +45,7 @@ export const COUNCIL_ROSTER: PersonaDefinition[] = [
   {
     id: "architect",
     name: "Architect",
-    requiredData: ["MACRO_CYCLE"],
+    requiredData: ["GDPC1", "CPIAUCSL"],
     systemPrompt: `Bạn là Architect. Đánh giá cấu trúc chu kỳ kinh tế vĩ mô và mô hình phân bổ tỷ trọng.` + ABSTAIN_RULE + NO_PREDICT_RULE + CITE_DATA_RULE
   }
 ];
@@ -60,6 +60,9 @@ HIẾN PHÁP CẦN TUÂN THỦ:
   "verdict": "Quyết định cuối cùng (Nhận định thị trường DỰA TRÊN SỐ LIỆU CỤ THỂ, cấm nói sáo rỗng)",
   "traffic_light": "GREEN" | "YELLOW" | "RED",
   "confidence": 80,
+  "opinions": [
+    { "name": "Banker", "opinion": "Tóm tắt ngắn gọn nhận định của Banker" }
+  ],
   "scenarios": [
     { "name": "Kịch bản tích cực", "probability": 30, "description": "...", "trigger": "..." },
     { "name": "Kịch bản cơ sở", "probability": 50, "description": "...", "trigger": "..." },
