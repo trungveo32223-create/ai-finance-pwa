@@ -88,10 +88,10 @@ function serializeContext(query: string, ctx: CouncilContext, personaRequiredDat
   }
 
   parts.push(`FUNNEL REPORT SUMMARY:
-- Liquidity: ${ctx.funnelReport.liquidity.status}
-- Recession: ${ctx.funnelReport.recession.status}
-- Cycle: ${ctx.funnelReport.cycle.status}
-- Policy VN: ${ctx.funnelReport.policy_vn.status}
+- Liquidity: ${ctx.funnelReport.liquidity.status} (Metrics: ${JSON.stringify(ctx.funnelReport.liquidity.metrics)})
+- Recession: ${ctx.funnelReport.recession.status} (Metrics: ${JSON.stringify(ctx.funnelReport.recession.metrics)})
+- Cycle: ${ctx.funnelReport.cycle.status} (Metrics: ${JSON.stringify(ctx.funnelReport.cycle.metrics)})
+- Policy VN: ${ctx.funnelReport.policy_vn.status} (Metrics: ${JSON.stringify(ctx.funnelReport.policy_vn.metrics)})
 - Micro/Allocation: ${ctx.funnelReport.micro_allocation.status} (${ctx.funnelReport.micro_allocation.reason})
   `);
 
@@ -135,6 +135,8 @@ export async function runCouncilDebate(
   query: string,
   context: CouncilContext
 ): Promise<DebateResult> {
+  console.log("=== [DIAGNOSIS HF-05] context.marketData ===", JSON.stringify(context.marketData, null, 2));
+  console.log("=== [DIAGNOSIS HF-05] context.funnelReport ===", JSON.stringify(context.funnelReport, null, 2));
   
   // Lọc Persona theo Short-circuit (Quy tắc 5.1.3: Nếu Liquidity/Recession RED -> Chỉ gọi phòng thủ)
   let activePersonas: PersonaDefinition[] = [...COUNCIL_ROSTER];
@@ -168,7 +170,7 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
 
     try {
       const currentKey = getNextGroqKey();
-      const fastJson = await callGroqWithRetry(currentKey, judgeModel, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
+      const fastJson = await callGroqWithRetry(currentKey, judgeModel, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 2000, true);
       const parsed = JSON.parse(fastJson);
       if (parsed.opinions && Array.isArray(parsed.opinions)) {
         parsed.opinions.forEach((o: any) => {
@@ -212,12 +214,17 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
   }
 
   // Gửi cho Monitor tổng hợp
+  const rawMarketDataKeys = Object.keys(context.marketData).map(k => `- ${k}: ${context.marketData[k].value} (stale: ${context.marketData[k].stale})`).join("\n");
+
   const monitorUserPrompt = `USER QUESTION: ${query}
 
-FUNNEL GATES STATUS:
-- Liquidity: ${context.funnelReport.liquidity.status}
-- Recession: ${context.funnelReport.recession.status}
+FUNNEL GATES STATUS & METRICS:
+- Liquidity: ${context.funnelReport.liquidity.status} (Metrics: ${JSON.stringify(context.funnelReport.liquidity.metrics)})
+- Recession: ${context.funnelReport.recession.status} (Metrics: ${JSON.stringify(context.funnelReport.recession.metrics)})
 - Allocation Constraint: ${context.funnelReport.micro_allocation.status} - ${context.funnelReport.micro_allocation.reason}
+
+RAW MARKET DATA:
+${rawMarketDataKeys}
 
 EXPERT OPINIONS (${opinions.length} available):
 ${opinions.map((o) => `- ${o.name}: ${o.opinion}`).join("\n")}

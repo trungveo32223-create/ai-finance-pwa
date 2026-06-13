@@ -9,9 +9,10 @@ interface Message {
   isConfirmCard?: boolean;
   confirmData?: any;
   confirmType?: 'Standard' | 'Debt';
-  isUnclear?: boolean;
   isReport?: boolean;
   reportData?: any;
+  isMacro?: boolean;
+  structuredData?: any;
 }
 
 // Simple SHA-256 hash
@@ -202,6 +203,62 @@ function ConfirmCard({ msg, msgIndex, handleConfirm, handleCancel }: { msg: any,
   );
 }
 
+function MacroCard({ data }: { data: any }) {
+  if (!data) return null;
+  const tLight = data.traffic_light;
+  const tColor = tLight === 'GREEN' ? 'bg-emerald-500 shadow-emerald-500/50' : (tLight === 'RED' ? 'bg-red-500 shadow-red-500/50' : 'bg-yellow-500 shadow-yellow-500/50');
+
+  return (
+    <div className="mt-2 w-full space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="flex items-center gap-3 bg-neutral-900/80 p-3 rounded-lg border border-neutral-700">
+        <div className={`w-4 h-4 rounded-full shadow-[0_0_10px] ${tColor}`} />
+        <span className="font-bold text-sm text-neutral-200 tracking-wide">
+          {tLight === 'GREEN' ? 'XANH - TÍCH CỰC' : (tLight === 'RED' ? 'ĐỎ - RỦI RO CAO' : 'VÀNG - THẬN TRỌNG')}
+        </span>
+      </div>
+
+      {data.three_answers && (
+        <div className="bg-neutral-900/60 p-3 rounded-lg border border-neutral-700 text-[13px] space-y-2">
+          <p><span className="text-neutral-400 font-semibold">Tâm lý TT:</span> {data.three_answers.greed_or_fear}</p>
+          <p><span className="text-neutral-400 font-semibold">Cửa tử:</span> {data.three_answers.loss_probability}</p>
+          <p><span className="text-neutral-400 font-semibold">SBV Hành động:</span> {data.three_answers.government_actions}</p>
+        </div>
+      )}
+
+      {data.scenarios && data.scenarios.length > 0 && (
+        <div className="bg-neutral-900/60 p-3 rounded-lg border border-neutral-700">
+          <h4 className="text-xs font-bold text-neutral-400 mb-2 uppercase">Kịch bản có thể xảy ra</h4>
+          <div className="space-y-2">
+            {data.scenarios.map((sc: any, idx: number) => (
+              <div key={idx} className="text-[13px] border-l-2 border-emerald-600/50 pl-2">
+                <span className="font-semibold text-emerald-400">{sc.name} ({sc.probability}%):</span> <span className="text-neutral-300">{sc.description}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.key_risk && (
+        <div className="bg-red-950/30 p-3 rounded-lg border border-red-900/50 text-[13px]">
+          <span className="font-bold text-red-400">⚠️ Rủi ro chính:</span> <span className="text-red-200/90">{data.key_risk}</span>
+        </div>
+      )}
+
+      {data.dissenting_view && (
+        <div className="bg-neutral-900/60 p-3 rounded-lg border border-neutral-700 text-[13px] italic text-neutral-400">
+          <span className="font-semibold text-neutral-300">Phản biện:</span> {data.dissenting_view}
+        </div>
+      )}
+      
+      {data.data_gaps && data.data_gaps.length > 0 && (
+        <div className="text-[11px] text-neutral-500">
+          * Thiếu dữ liệu: {data.data_gaps.join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passphrase, setPassphrase] = useState('');
@@ -280,27 +337,72 @@ export default function ChatPage() {
         return;
       }
 
-      const data = await res.json();
+      const contentType = res.headers.get('Content-Type') || '';
 
-      if (data.action === 'UNCLEAR' || data.action === 'MESSAGE') {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
-      } else if (data.action === 'CONFIRM_REQUIRED') {
-        setMessages(prev => [...prev, { 
-          role: 'assistant', 
-          content: 'Sếp kiểm tra lại thông tin trước khi ghi sổ nhé:',
-          isConfirmCard: true,
-          confirmData: data.data,
-          confirmType: data.type
-        }]);
-      } else if (data.action === 'REPORT') {
-        setMessages(prev => [...prev, { 
-          role: 'assistant', 
-          content: '',
-          isReport: true,
-          reportData: data.data
-        }]);
+      if (contentType.includes('text/event-stream')) {
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        let done = false;
+        
+        // Tạo placeholder cho stream Macro
+        setMessages(prev => [...prev, { role: 'assistant', content: 'Đang kết nối Hội đồng...', isMacro: true, structuredData: null }]);
+
+        while (reader && !done) {
+          const { value, done: doneReading } = await reader.read();
+          done = doneReading;
+          if (value) {
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const event = JSON.parse(line.substring(6));
+                  if (event.type === 'phase') {
+                    setMessages(prev => {
+                      const updated = [...prev];
+                      updated[updated.length - 1].content = event.label;
+                      return updated;
+                    });
+                  } else if (event.type === 'verdict') {
+                    setMessages(prev => {
+                      const updated = [...prev];
+                      updated[updated.length - 1].content = event.text;
+                      if (event.structuredData) {
+                        updated[updated.length - 1].structuredData = event.structuredData;
+                      }
+                      return updated;
+                    });
+                  }
+                } catch (e) {
+                  // ignore partial JSON chunks
+                }
+              }
+            }
+          }
+        }
       } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.error || 'Lỗi hệ thống' }]);
+        const data = await res.json();
+
+        if (data.action === 'UNCLEAR' || data.action === 'MESSAGE') {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+        } else if (data.action === 'CONFIRM_REQUIRED') {
+          setMessages(prev => [...prev, { 
+            role: 'assistant', 
+            content: 'Sếp kiểm tra lại thông tin trước khi ghi sổ nhé:',
+            isConfirmCard: true,
+            confirmData: data.data,
+            confirmType: data.type
+          }]);
+        } else if (data.action === 'REPORT') {
+          setMessages(prev => [...prev, { 
+            role: 'assistant', 
+            content: '',
+            isReport: true,
+            reportData: data.data
+          }]);
+        } else {
+          setMessages(prev => [...prev, { role: 'assistant', content: data.error || 'Lỗi hệ thống' }]);
+        }
       }
     } catch (error) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Lỗi kết nối máy chủ.' }]);
@@ -393,6 +495,10 @@ export default function ChatPage() {
               
               {msg.isReport && msg.reportData && (
                 <ReportCard data={msg.reportData} />
+              )}
+
+              {msg.isMacro && msg.structuredData && (
+                <MacroCard data={msg.structuredData} />
               )}
 
               {msg.isConfirmCard && msg.confirmData && (
