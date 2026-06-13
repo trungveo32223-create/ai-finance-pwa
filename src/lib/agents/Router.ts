@@ -2,13 +2,23 @@ import { RouterResponse, MessageContext } from './types';
 import { extractVN30Ticker } from './council/ticker';
 
 // Danh sách các key Groq (Xoay vòng để chống rate limit)
-const GROQ_KEYS = [process.env.GROQ_KEY_1, process.env.GROQ_KEY_2, process.env.GROQ_API_KEY].filter(Boolean) as string[];
+const GROQ_KEYS = [
+  (process.env.GROQ_KEY_1 ?? "").trim(),
+  (process.env.GROQ_KEY_2 ?? "").trim(),
+  (process.env.GROQ_API_KEY ?? "").trim()
+].filter(Boolean);
+
 let currentGroqIndex = 0;
 
-function getNextGroqKey() {
-  if (GROQ_KEYS.length === 0) throw new Error('Missing GROQ_KEY');
+export function getNextGroqKey(): string {
+  if (GROQ_KEYS.length === 0) {
+    throw new Error("GROQ key missing — kiểm tra env var GROQ_KEY_1");
+  }
   const key = GROQ_KEYS[currentGroqIndex];
   currentGroqIndex = (currentGroqIndex + 1) % GROQ_KEYS.length;
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`key loaded: ${key ? key.slice(0,7)+"..." : "UNDEFINED"}`);
+  }
   return key;
 }
 

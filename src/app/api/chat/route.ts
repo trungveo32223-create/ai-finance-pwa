@@ -75,14 +75,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Nhánh 3: Macro (Council V2)
         send({ type: "phase", label: "Đang triệu tập Hội đồng 7+1..." });
         
-        // Lấy GROQ_KEY từ môi trường
-        // Dùng fallback nếu không có env để tránh crash (chỉ dùng cho localhost test)
-        const groqKey = process.env.GROQ_KEY_1 || process.env.GROQ_API_KEY || "missing_key";
-        
+        // Lấy GROQ_KEY từ môi trường đã bị gỡ bỏ, dùng trực tiếp trong Router
         const context = await buildContext();
         send({ type: "phase", label: "Đang check 6 cổng Funnel..." });
 
-        const result = await runCouncilDebate(message, context, groqKey);
+        const result = await runCouncilDebate(message, context);
         send({ type: "phase", label: "The Judge đang chốt hạ..." });
         send({ type: "verdict", text: result.structuredVerdict.verdict, degraded: result.degraded });
         send({ type: "done" });

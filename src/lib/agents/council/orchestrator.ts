@@ -124,10 +124,11 @@ async function callGroqWithRetry(
   throw new Error("Groq failed after retry");
 }
 
+import { getNextGroqKey } from "../Router";
+
 export async function runCouncilDebate(
   query: string,
-  context: CouncilContext,
-  groqKey: string
+  context: CouncilContext
 ): Promise<DebateResult> {
   
   // Lọc Persona theo Short-circuit (Quy tắc 5.1.3: Nếu Liquidity/Recession RED -> Chỉ gọi phòng thủ)
@@ -158,7 +159,8 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
     const fastUserPrompt = serializeContext(query, context, allRequired);
 
     try {
-      const fastJson = await callGroqWithRetry(groqKey, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
+      const currentKey = getNextGroqKey();
+      const fastJson = await callGroqWithRetry(currentKey, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
       const parsed = JSON.parse(fastJson);
       if (parsed.opinions && Array.isArray(parsed.opinions)) {
         parsed.opinions.forEach((o: any) => {
@@ -177,7 +179,8 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
     const settled = await Promise.allSettled(
       activePersonas.map((persona) => {
         const userPrompt = serializeContext(query, context, persona.requiredData);
-        return callGroqWithRetry(groqKey, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
+        const currentKey = getNextGroqKey(); // Mỗi trong 7 call lấy 1 key xoay vòng
+        return callGroqWithRetry(currentKey, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
           .then((opinion): ExpertOpinion => ({
             id: persona.id,
             name: persona.name,
@@ -219,7 +222,8 @@ Please output strict JSON according to the schema.`;
   let structuredVerdict: StructuredVerdict;
   
   try {
-    rawJson = await callGroq(groqKey, MONITOR_PROMPT, monitorUserPrompt, DEFAULTS.judgeTimeoutMs, 800, true);
+    const monitorKey = getNextGroqKey();
+    rawJson = await callGroqWithRetry(monitorKey, MONITOR_PROMPT, monitorUserPrompt, DEFAULTS.judgeTimeoutMs, 800, true);
     structuredVerdict = JSON.parse(rawJson);
     
     // Ép cứng Disclaimer (Luật L1 / Test S1-07)
