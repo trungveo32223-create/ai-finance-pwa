@@ -3,6 +3,8 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { routeIntent } from "@/lib/agents/Router";
 import { runCouncilDebate } from "@/lib/agents/council/orchestrator";
 import { buildContext } from "@/lib/agents/council/context_builder";
+import { generateCacheHash, getCachedVerdict, setCachedVerdict } from "@/lib/agents/council/cache";
+import { extractVN30Ticker } from "@/lib/agents/council/ticker";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -77,9 +79,32 @@ export async function POST(req: NextRequest): Promise<Response> {
         
         // Lấy GROQ_KEY từ môi trường đã bị gỡ bỏ, dùng trực tiếp trong Router
         const context = await buildContext();
+
+        // KẾT HỢP CACHE HF-04 (Bỏ qua cache nếu có mã cổ phiếu VN30)
+        const hasTicker = !!extractVN30Ticker(message);
+        let cacheHash = "";
+        
+        if (!hasTicker) {
+          cacheHash = generateCacheHash(message, context);
+          const cached = await getCachedVerdict(cacheHash);
+          if (cached) {
+            console.log("[Cache] HIT ->", message);
+            send({ type: "phase", label: "Tìm thấy bản án trong Cache..." });
+            send({ type: "verdict", text: cached.structuredVerdict.verdict + "\n\n*(⚡ Trả lời ngay từ Cache hệ thống)*", degraded: cached.degraded });
+            send({ type: "done" });
+            controller.close();
+            return;
+          }
+        }
+
         send({ type: "phase", label: "Đang check 6 cổng Funnel..." });
 
         const result = await runCouncilDebate(message, context);
+        
+        if (!hasTicker) {
+          await setCachedVerdict(cacheHash, message, result);
+        }
+        
         send({ type: "phase", label: "The Judge đang chốt hạ..." });
         send({ type: "verdict", text: result.structuredVerdict.verdict, degraded: result.degraded });
         send({ type: "done" });

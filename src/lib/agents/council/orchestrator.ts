@@ -17,6 +17,9 @@ const DEFAULTS = {
 };
 
 function parseGroqResponse(raw: any): string {
+  if (raw?.usage) {
+    console.log(`[Groq Usage] Model: ${raw.model || "unknown"} | Prompt: ${raw.usage.prompt_tokens} | Completion: ${raw.usage.completion_tokens} | Total: ${raw.usage.total_tokens}`);
+  }
   if (raw?.choices?.[0]?.message?.content) {
     return raw.choices[0].message.content.trim();
   }
@@ -25,6 +28,7 @@ function parseGroqResponse(raw: any): string {
 
 async function callGroq(
   apiKey: string,
+  modelName: string,
   systemPrompt: string,
   userPrompt: string,
   timeoutMs: number,
@@ -35,7 +39,7 @@ async function callGroq(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const body: any = {
-      model: DEFAULTS.model,
+      model: modelName,
       max_tokens: maxTokens,
       temperature: 0.4,
       messages: [
@@ -101,6 +105,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 async function callGroqWithRetry(
   apiKey: string,
+  modelName: string,
   systemPrompt: string,
   userPrompt: string,
   timeoutMs: number,
@@ -110,7 +115,7 @@ async function callGroqWithRetry(
   let attempt = 0;
   while (attempt < 2) {
     try {
-      return await callGroq(apiKey, systemPrompt, userPrompt, timeoutMs, maxTokens, isJson);
+      return await callGroq(apiKey, modelName, systemPrompt, userPrompt, timeoutMs, maxTokens, isJson);
     } catch (err: any) {
       if (err.message && err.message.includes("429") && attempt === 0) {
         console.warn("[Groq] 429 Rate Limit, retrying in 2s...");
@@ -144,6 +149,9 @@ export async function runCouncilDebate(
   const opinions: ExpertOpinion[] = [];
   const failures: ExpertFailure[] = [];
 
+  const expertModel = process.env.MODEL_EXPERT || "llama-3.1-8b-instant";
+  const judgeModel = process.env.MODEL_JUDGE || "llama-3.3-70b-versatile";
+
   if (!hasTicker) {
     // ==========================================
     // FAST MODE: 1 LLM Call đóng n vai (Tránh nổ 429 TPM)
@@ -160,7 +168,7 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
 
     try {
       const currentKey = getNextGroqKey();
-      const fastJson = await callGroqWithRetry(currentKey, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
+      const fastJson = await callGroqWithRetry(currentKey, judgeModel, fastSystemPrompt, fastUserPrompt, DEFAULTS.expertTimeoutMs * 2, 1200, true);
       const parsed = JSON.parse(fastJson);
       if (parsed.opinions && Array.isArray(parsed.opinions)) {
         parsed.opinions.forEach((o: any) => {
@@ -180,7 +188,7 @@ ${activePersonas.map(p => `- [${p.id}] ${p.name}: ${p.systemPrompt}`).join("\n\n
       activePersonas.map((persona) => {
         const userPrompt = serializeContext(query, context, persona.requiredData);
         const currentKey = getNextGroqKey(); // Mỗi trong 7 call lấy 1 key xoay vòng
-        return callGroqWithRetry(currentKey, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
+        return callGroqWithRetry(currentKey, expertModel, persona.systemPrompt, userPrompt, DEFAULTS.expertTimeoutMs, 150)
           .then((opinion): ExpertOpinion => ({
             id: persona.id,
             name: persona.name,
@@ -223,7 +231,7 @@ Please output strict JSON according to the schema.`;
   
   try {
     const monitorKey = getNextGroqKey();
-    rawJson = await callGroqWithRetry(monitorKey, MONITOR_PROMPT, monitorUserPrompt, DEFAULTS.judgeTimeoutMs, 800, true);
+    rawJson = await callGroqWithRetry(monitorKey, judgeModel, MONITOR_PROMPT, monitorUserPrompt, DEFAULTS.judgeTimeoutMs, 800, true);
     structuredVerdict = JSON.parse(rawJson);
     
     // Ép cứng Disclaimer (Luật L1 / Test S1-07)
